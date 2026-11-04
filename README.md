@@ -1,3 +1,7 @@
+#Notice#
+This was created using Grok AI (xAI) and is provided AS-IS, feel free to fork and make your own changes.
+I created this for some friends who have a bunch of these petchatz devices and was looking for a way to repurpose them.
+
 # PetChatz on-premises hub
 
 This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. An admin can call any device that is online. A normal user can call only the device assigned to them.
