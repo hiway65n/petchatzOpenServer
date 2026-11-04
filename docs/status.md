@@ -11,9 +11,13 @@ This is an on-premises LAN system. It is not ready to publish as a finished proj
 - A two-way audio and video call between a desktop browser and the device kiosk.
 - A local TURN server so the two browsers can exchange media when a direct path is awkward.
 
+## Works from outside the house
+
+- The call page and its web socket, through a reverse proxy such as Zoraxy. See [off-lan.md](off-lan.md).
+- The media relay, by forwarding TURN straight to the hub. The proxy does not carry that UDP traffic.
+
 ## Not done
 
-- Calls from outside the house network. There is no port-forward story, no dynamic DNS, and no trusted public certificate. ICE includes a public STUN server, which is not the same as a working off-LAN call.
 - Treats and scent. The device still has those local commands. The hub does not send them.
 - A polished admin UI. Creating a user and assigning a device works. Editing and removing assignments does not.
 - Replacing the self-signed certificate with a name people can trust.
@@ -22,7 +26,7 @@ This is an on-premises LAN system. It is not ready to publish as a finished proj
 
 ## Before this repository is public
 
-- Confirm a call from a network that is not the device's LAN, and document the exact firewall and DNS steps that made it work.
+- Before publishing, replace any house-specific addresses that were added while testing. The docs should keep using example names.
 - Remove or clearly mark anything that only applies to the first lab (specific addresses, the first device id, leftover experiments).
 - Rotate any password that was ever typed into a chat, a shell history, or a ticket, and do not copy those values into the docs.
 - Review device SSH. An empty root password is acceptable only on a trusted LAN you control, and it should not be the published setup.

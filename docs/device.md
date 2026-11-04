@@ -58,6 +58,12 @@ Checked on the first unit, software `4.2.0rc1`:
 
 Leave the second CPU alone. Trying to online it coincided with a reboot. One core is a reason the call has to stay small. See [call-quality.md](call-quality.md).
 
+## Watchdog
+
+`petchatz-ws` is a systemd notify service with a 20 second watchdog. The stock menu page pets it by sending `/ping` on `wss://localhost` every 5 seconds. The call page has to keep doing that after it leaves the menu. If the pings stop, systemd aborts `petchatz-ws`. The unit's `FailureAction=reboot` and `StartLimitAction=reboot` then reboot the board, which showed up as a reboot about every four minutes.
+
+`deploy/petchatz-ws-no-reboot.conf` is a drop-in for the device. It leaves the 20 second watchdog in place so a stuck process is restarted, and it turns off the actions that reboot the board. The call page opens `wss://localhost` and sends `/ping` every 5 seconds.
+
 ## Local commands that are not part of a call
 
 The kiosk's local socket still answers plain-text paths such as `/device/get_id`, `/get_software_version`, `/settings/get_treat_count`, and `/network/get_status`. Treat and scent commands exist on the device and are not wired through the hub yet.

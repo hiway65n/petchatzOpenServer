@@ -123,6 +123,7 @@
         pc.ontrack = attachRemote;
         pc.onicecandidate = function(event) {
           if (!event.candidate) return;
+          log("ice " + (event.candidate.type || "?") + " " + (event.candidate.protocol || ""));
           send({
             type: "ice",
             call_id: callId,
@@ -185,7 +186,10 @@
 
     function onMessage(event) {
       var data = JSON.parse(event.data);
-      if (data.type === "ring") {
+      if (data.type === "hello" && data.iceServers) {
+        iceServers = data.iceServers;
+        log("ice servers " + iceServers.length);
+      } else if (data.type === "ring") {
         if (callId) {
           send({type: "hangup", call_id: data.call_id});
           return;
@@ -216,6 +220,35 @@
       }
     }
 
+    var localWs = null;
+    var localPing = null;
+
+    function connectLocal() {
+      if (localWs && (localWs.readyState === 0 || localWs.readyState === 1)) return;
+      try {
+        localWs = new WebSocket("wss://localhost");
+      } catch (err) {
+        log("local socket " + err);
+        setTimeout(connectLocal, 2000);
+        return;
+      }
+      localWs.onopen = function() {
+        log("local watchdog on");
+        localWs.send("/ping");
+        if (localPing) clearInterval(localPing);
+        localPing = setInterval(function() {
+          if (localWs && localWs.readyState === 1) localWs.send("/ping");
+        }, 5000);
+      };
+      localWs.onclose = function() {
+        if (localPing) clearInterval(localPing);
+        localPing = null;
+        log("local watchdog off");
+        setTimeout(connectLocal, 2000);
+      };
+      localWs.onerror = function() {};
+    }
+
     function connect() {
       ws = new WebSocket("wss://" + location.host + "/signal?role=device");
       ws.onopen = function() {
@@ -235,11 +268,8 @@
       };
     }
 
-    fetch("/ice.json").then(function(response) {
-      return response.json();
-    }).then(function(body) {
-      if (body.iceServers) iceServers = body.iceServers;
-    }).catch(function() {}).then(connect);
+    connectLocal();
+    connect();
   </script>
 </body>
 </html>

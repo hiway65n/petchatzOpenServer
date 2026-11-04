@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh PetChatz hub public IP for TURN
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/petchatz-hub/refresh-public-ip.sh

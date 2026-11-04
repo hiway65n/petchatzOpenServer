@@ -15,6 +15,7 @@ This tree is the first working on-premises version. It is meant to stay private 
 1. [Install the hub](docs/install.md).
 2. [Point the device at the hub](docs/device.md). That is a one-line change in the device's own page. The kiosk browser then loads the call page from the hub.
 3. [Sign in and call](docs/using.md).
+4. When a call works on the LAN, [open it to the outside](docs/off-lan.md). The page goes through a reverse proxy. The audio and video relay is still a direct forward to the hub.
 
 The design of the call path is in [docs/architecture.md](docs/architecture.md). What was learned about delay and one-way media is in [docs/call-quality.md](docs/call-quality.md).
 
@@ -28,6 +29,8 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/petchatz-hub.service` | systemd unit |
 | `hub/config.example.json` | Shape of the config file created at install |
 | `deploy/setup.sh` | First-time install on Ubuntu |
+| `deploy/enable-offlan.sh` | Set the external name and TURN's public address |
+| `deploy/petchatz-ws-no-reboot.conf` | Device drop-in so a missed watchdog restarts the service instead of the board |
 | `tools/reload_kiosk.py` | Reload the device page without restarting its services |
 | `tools/callcheck.py` | Check that a device returns an SDP offer |
 

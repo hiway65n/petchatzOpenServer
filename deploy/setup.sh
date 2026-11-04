@@ -65,20 +65,25 @@ chmod 600 "$DEST/key.pem"
 python3 - "$DEST/turn.conf" "$LAN_IP" "$TURN_PASS" << 'PY'
 import sys
 path, lan_ip, turn_pass = sys.argv[1:]
-with open(path, "w", encoding="utf-8") as fh:
-    fh.write("""listening-port=3478
+# external-ip stays on the LAN address until deploy/enable-offlan.sh sets the public one.
+open(path, "w", encoding="utf-8").write("""listening-port=3478
 listening-ip=0.0.0.0
 relay-ip=%s
 external-ip=%s
+min-port=49160
+max-port=49200
 fingerprint
 lt-cred-mech
 realm=petchatz
 user=petchatz:%s
+user-quota=8
+total-quota=16
 log-file=/var/log/turnserver.log
 simple-log
 no-cli
 no-tls
 no-dtls
+no-multicast-peers
 """ % (lan_ip, lan_ip, turn_pass))
 PY
 chmod 600 "$DEST/turn.conf"
@@ -117,3 +122,4 @@ echo "Admin password: ${ADMIN_PASS}"
 echo "Save that password now. It is not written anywhere except $DEST/config.json and the hub database."
 echo "Browsers must accept the self-signed certificate warning."
 echo "Next: point the device at ${LAN_IP}. See docs/device.md."
+echo "Outside-LAN calls need docs/off-lan.md after the device is calling on the LAN."

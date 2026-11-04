@@ -26,7 +26,7 @@ Text JSON on the web socket.
 
 | Type | Direction | Meaning |
 | --- | --- | --- |
-| `hello` | device to hub | Register `device_id`, `version`, `hw` |
+| `hello` | device to hub, then hub replies | Register `device_id`, `version`, `hw`. The reply carries the LAN ICE servers |
 | `devices` | hub to user | Devices this account is allowed to see |
 | `call` | user to hub | Start a call to `device_id` |
 | `ring` | hub to device | Start the offer |
@@ -59,13 +59,17 @@ Passwords are stored as PBKDF2-HMAC-SHA256. The database lock is a re-entrant lo
 
 ## ICE
 
-`/ice.json` returns:
+ICE servers depend on who is asking. The device, and a browser that opened the LAN address, get:
 
 - `stun:stun.l.google.com:19302`
 - `stun:<hub-lan-ip>:3478`
-- `turn:<hub-lan-ip>:3478?transport=udp` with the TURN user from `config.json`
+- `turn:<hub-lan-ip>:3478` over UDP and TCP, with the TURN user from `config.json`
 
-Google STUN is a convenience on the LAN and is not an off-LAN design. When this is published for use outside the LAN, replace this list on purpose and document the ports. A local TURN hop was not the source of the multi-second delay in testing. Leave TURN in place for LAN calls.
+A signed-in browser that opened `public_host` gets the same list with that public name in place of the LAN address. The device never uses the public name, so a missing NAT hairpin does not take the kiosk offline.
+
+`/ice.json` requires a login. The device gets its list in the `hello` reply on its socket. coturn's `external-ip` is `public/lan` after `deploy/enable-offlan.sh`, so a relay candidate uses the address an outside browser can send to. Relay ports are UDP 49160–49200. See [off-lan.md](off-lan.md).
+
+A local TURN hop was not the source of the multi-second delay on LAN calls. Leave TURN in place.
 
 ## Why the hub speaks TLS 1.2
 

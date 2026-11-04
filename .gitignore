@@ -9,5 +9,7 @@ config.json
 hub.db
 cert.pem
 key.pem
+public-cert.pem
+public-key.pem
 turn.conf
 *.log

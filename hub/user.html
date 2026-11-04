@@ -67,6 +67,13 @@
     </section>
 
     <section id="admin" class="hidden">
+      <h2>Outside the house</h2>
+      <form id="public-host">
+        <label for="public-host-input">External address</label>
+        <input id="public-host-input" name="public_host" placeholder="petchatz.example.net" autocomplete="off">
+        <button class="ghost" type="submit">Save external address</button>
+        <p class="sub">People away from home open https:// and this name. The proxy handles that page. The device keeps using the address inside the house.</p>
+      </form>
       <h2>People</h2>
       <div class="grid">
         <form id="create-user">
@@ -267,10 +274,13 @@
     }
 
     function connectSocket() {
-      ws = new WebSocket("wss://" + location.host + "/signal?role=user");
+      ws = new WebSocket("wss://" + location.host + "/signal?role=user&via=" + encodeURIComponent(location.hostname));
       ws.onmessage = function(event) {
         var data = JSON.parse(event.data);
-        if (data.type === "devices") renderDevices(data.devices || []);
+        if (data.type === "devices") {
+          if (data.iceServers) iceServers = data.iceServers;
+          renderDevices(data.devices || []);
+        }
         else if (data.type === "ringing") {
           callId = data.call_id;
           show("stage", true);
@@ -337,6 +347,20 @@
       });
     };
 
+    document.getElementById("public-host").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({public_host: form.public_host.value})
+      }).then(function(r) {
+        document.getElementById("admin-msg").textContent = r.ok
+          ? "External address saved. Refresh an outside browser before the next call."
+          : "External address was not saved.";
+      });
+    };
+
     document.getElementById("change-pass").onsubmit = function(event) {
       event.preventDefault();
       var form = event.target;
@@ -354,12 +378,11 @@
       document.getElementById("login-error").className = "error";
     }
 
-    fetch("/ice.json").then(function(r) { return r.json(); }).then(function(body) {
-      iceServers = body.iceServers || [];
-    });
-
     fetch("/api/session").then(function(r) { return r.json(); }).then(function(body) {
       if (!body.user) return;
+      fetch("/ice.json?via=" + encodeURIComponent(location.hostname)).then(function(r) { return r.json(); }).then(function(ice) {
+        iceServers = ice.iceServers || iceServers;
+      }).catch(function() {});
       session = body.user;
       show("login", false);
       show("app", true);
@@ -370,6 +393,9 @@
       if (session.role === "admin") {
         show("admin", true);
         loadPeople();
+        fetch("/api/settings").then(function(r) { return r.json(); }).then(function(body) {
+          document.getElementById("public-host-input").value = body.public_host || "";
+        });
       }
       connectSocket();
     });

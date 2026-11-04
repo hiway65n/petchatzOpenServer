@@ -3,5 +3,9 @@
   "turn_user": "petchatz",
   "turn_pass": "generated-by-deploy/setup.sh",
   "admin_user": "petchatz",
-  "admin_pass": "generated-by-deploy/setup.sh"
+  "admin_pass": "generated-by-deploy/setup.sh",
+  "public_host": "petchatz.example.net",
+  "public_ip": "",
+  "turn_min_port": 49160,
+  "turn_max_port": 49200
 }

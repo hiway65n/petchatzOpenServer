@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import ssl
@@ -34,6 +35,26 @@ calls = {}
 def load_config():
     with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def save_config(cfg):
+    temporary = CONFIG_PATH + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+        fh.write("\n")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, CONFIG_PATH)
+
+
+def clean_public_host(value):
+    host = (value or "").strip().lower().rstrip(".")
+    if not host:
+        return ""
+    if ":" in host or "/" in host or len(host) > 253:
+        raise ValueError("use a hostname or IPv4 address, without a port")
+    if not re.match(r"^[a-z0-9.-]+$", host):
+        raise ValueError("that external address has characters the hub cannot use")
+    return host
 
 
 def connect_db():
@@ -137,18 +158,65 @@ def request_user(request):
     return session_user(request.cookies.get("sid"))
 
 
-def ice_servers():
-    cfg = load_config()
-    host = cfg["lan_ip"]
+def turn_entries(host, cfg):
+    user = cfg["turn_user"]
+    password = cfg["turn_pass"]
     return [
-        {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:%s:3478" % host},
         {
             "urls": "turn:%s:3478?transport=udp" % host,
-            "username": cfg["turn_user"],
-            "credential": cfg["turn_pass"],
+            "username": user,
+            "credential": password,
+        },
+        {
+            "urls": "turn:%s:3478?transport=tcp" % host,
+            "username": user,
+            "credential": password,
         },
     ]
+
+
+def ice_servers(audience):
+    """LAN callers and the device use the hub's private address.
+
+    A browser that opened the public name gets that name instead. The device
+    stays on the private address so a call does not depend on the router
+    looping public traffic back into the house.
+    """
+    cfg = load_config()
+    servers = [{"urls": "stun:stun.l.google.com:19302"}]
+    public = (cfg.get("public_host") or "").strip()
+    lan = (cfg.get("lan_ip") or "").strip()
+    if audience == "public" and public:
+        servers.extend(turn_entries(public, cfg))
+    elif lan:
+        servers.extend(turn_entries(lan, cfg))
+    return servers
+
+
+def header_host(value):
+    return (value or "").split(",")[0].strip().lower().split(":")[0].rstrip(".")
+
+
+def request_audience(request):
+    """Public ICE only when the browser opened the configured external name.
+
+    Zoraxy may pass that name in Host, X-Forwarded-Host, or not at all. The
+    page also sends it as via=. via= is accepted only when it matches the
+    configured name, so a caller cannot aim TURN at some other host.
+    """
+    cfg = load_config()
+    public = (cfg.get("public_host") or "").strip().lower().rstrip(".")
+    if not public:
+        return "lan"
+    names = {
+        header_host(request.url.host),
+        header_host(request.headers.get("X-Forwarded-Host")),
+        header_host(request.query.get("via")),
+    }
+    if public in names:
+        return "public"
+    return "lan"
 
 
 def device_snapshot(user):
@@ -242,8 +310,13 @@ async def ping(_request):
     return response
 
 
-async def ice(_request):
-    return web.json_response({"iceServers": ice_servers()})
+async def ice(request):
+    # TURN passwords must not be readable by anyone who can open the port.
+    if request_user(request) is None:
+        raise web.HTTPUnauthorized()
+    audience = request_audience(request)
+    log.info("ice list for signed-in user via %s", audience)
+    return web.json_response({"iceServers": ice_servers(audience)})
 
 
 async def device_page(_request):
@@ -385,6 +458,35 @@ async def api_assign(request):
     return web.json_response({"ok": True})
 
 
+async def api_settings(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    cfg = load_config()
+    return web.json_response(
+        {
+            "public_host": cfg.get("public_host") or "",
+            "lan_ip": cfg.get("lan_ip") or "",
+        }
+    )
+
+
+async def api_settings_save(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    try:
+        public_host = clean_public_host(body.get("public_host"))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    cfg = load_config()
+    cfg["public_host"] = public_host
+    save_config(cfg)
+    log.info("external address set to %s", public_host or "(none)")
+    return web.json_response({"ok": True, "public_host": public_host})
+
+
 async def api_password(request):
     user = request_user(request)
     if user is None:
@@ -414,7 +516,15 @@ async def signal(request):
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
         user_sockets.setdefault(user["id"], set()).add(ws)
-        await send_json(ws, {"type": "devices", "devices": device_snapshot(user)})
+        audience = request_audience(request)
+        await send_json(
+            ws,
+            {
+                "type": "devices",
+                "devices": device_snapshot(user),
+                "iceServers": ice_servers(audience),
+            },
+        )
         try:
             await user_loop(ws, user)
         finally:
@@ -469,6 +579,7 @@ async def device_loop(ws):
                 "call_id": previous.get("call_id"),
             }
             log.info("device online %s version %s", device_id, data.get("version"))
+            await send_json(ws, {"type": "hello", "iceServers": ice_servers("lan")})
             await push_devices()
         elif kind == "offer" and device_id:
             call = calls.get(data.get("call_id"))
@@ -598,21 +709,40 @@ def make_app():
             web.post("/api/users", api_create_user),
             web.post("/api/assign", api_assign),
             web.post("/api/password", api_password),
+            web.get("/api/settings", api_settings),
+            web.post("/api/settings", api_settings_save),
             web.get("/signal", signal),
         ]
     )
     return app
 
 
+def tls_context(cert_path, key_path):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # The device browser is Chromium 69, which speaks TLS 1.2.
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(cert_path, key_path)
+    return ctx
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     connect_db()
-    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    # The device browser is Chromium 69, which speaks TLS 1.2.
-    ssl_ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-    ssl_ctx.load_cert_chain(
+    ssl_ctx = tls_context(
         os.path.join(BASE, "cert.pem"), os.path.join(BASE, "key.pem")
     )
+    public_cert = os.path.join(BASE, "public-cert.pem")
+    public_key = os.path.join(BASE, "public-key.pem")
+    if os.path.isfile(public_cert) and os.path.isfile(public_key):
+        public_ctx = tls_context(public_cert, public_key)
+        public_name = (load_config().get("public_host") or "").strip().lower()
+
+        def select_certificate(sock, server_name, _initial):
+            if server_name and server_name.lower() == public_name:
+                sock.context = public_ctx
+
+        ssl_ctx.sni_callback = select_certificate
+        log.info("public certificate enabled for %s", public_name)
     web.run_app(make_app(), host="0.0.0.0", port=443, ssl_context=ssl_ctx, print=None)
 
 
