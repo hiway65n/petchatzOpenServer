@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Created on the hub at install time. Never commit these.
+config.json
+hub.db
+cert.pem
+key.pem
+turn.conf
+*.log

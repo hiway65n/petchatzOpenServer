@@ -1,0 +1,56 @@
+# Install the hub
+
+Use a small Ubuntu machine that stays on. The first hub was Ubuntu 24.04 with Python 3.12 and the `python3-aiohttp` apt package (3.9.x). The service listens on port 443, so it runs as root. coturn listens on UDP 3478.
+
+From a checkout of this repo on that machine:
+
+```bash
+sudo ./deploy/setup.sh 192.168.1.20
+```
+
+Replace `192.168.1.20` with the hub's LAN address. The script installs `python3-aiohttp`, `coturn`, and `openssl`, writes `/opt/petchatz-hub/`, creates a 10-year self-signed certificate for that IP, generates an admin password and a TURN password, and starts `coturn` and `petchatz-hub`.
+
+The admin username defaults to `petchatz`. Set `ADMIN_USER` or `ADMIN_PASS` in the environment before running the script if you want to choose them. If you do not set `ADMIN_PASS`, the script prints a random one once. Store it somewhere outside this repo. The only copies on the hub are `/opt/petchatz-hub/config.json` (mode 600) and the password hash inside `/opt/petchatz-hub/hub.db`.
+
+The script stops if `config.json` is already there, so a second run cannot rotate the live passwords by accident.
+
+## Check
+
+```bash
+systemctl status petchatz-hub coturn
+python3 -c "import ssl,urllib.request; c=ssl._create_unverified_context(); print(urllib.request.urlopen('https://127.0.0.1/ping.json', context=c).read())"
+```
+
+`ping.json` should return `{"status": "ok"}`.
+
+Open `https://<hub-ip>/` from another computer on the LAN and accept the certificate warning. Sign in with the admin account the script printed.
+
+## Update code on a hub that is already installed
+
+`setup.sh` will not overwrite an existing hub. Copy the changed files and restart only the hub service:
+
+```bash
+sudo cp hub/server.py hub/device.html hub/user.html /opt/petchatz-hub/
+sudo systemctl restart petchatz-hub
+```
+
+Restarting the hub drops live calls. It does not reboot the device. If `device.html` changed, also reload the kiosk page with [docs/device.md](device.md). People who already have the call page open should refresh. The pages are sent with `Cache-Control: no-store`, but an open tab keeps the old script until reload.
+
+## Files the installer creates and git ignores
+
+| File | Purpose |
+| --- | --- |
+| `/opt/petchatz-hub/config.json` | LAN IP, TURN user, TURN password, first admin |
+| `/opt/petchatz-hub/cert.pem` and `key.pem` | TLS certificate for the hub IP |
+| `/opt/petchatz-hub/turn.conf` | coturn config, including the TURN password |
+| `/opt/petchatz-hub/hub.db` | Users, assignments, sessions |
+
+`hub/config.example.json` shows the keys only. Do not copy a live `config.json` into git.
+
+## Firewall
+
+On the LAN, callers need TCP 443 to the hub. Media needs UDP 3478 to the hub, and the usual high UDP ports between the two browsers. If a later off-LAN setup forwards ports, forward those on purpose and then change this document. Do not assume the first LAN install is that setup.
+
+## Certificate warning
+
+The certificate is self-signed for an IP address. Every new browser has to click through the warning. The device kiosk is already started with `--ignore-certificate-errors`, so it does not prompt. A public name and a real certificate are part of the later off-LAN work, not this install.

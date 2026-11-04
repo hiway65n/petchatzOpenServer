@@ -1,0 +1,7 @@
+{
+  "lan_ip": "192.0.2.10",
+  "turn_user": "petchatz",
+  "turn_pass": "generated-by-deploy/setup.sh",
+  "admin_user": "petchatz",
+  "admin_pass": "generated-by-deploy/setup.sh"
+}

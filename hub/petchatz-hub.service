@@ -1,0 +1,15 @@
+[Unit]
+Description=PetChatz home hub
+After=network-online.target coturn.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/petchatz-hub
+ExecStart=/usr/bin/python3 /opt/petchatz-hub/server.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

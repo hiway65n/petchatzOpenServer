@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PetChatz</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #fff; font-family: sans-serif; }
+    #remote { width: 100%; height: 100%; object-fit: cover; background: #000; }
+    #status {
+      position: absolute; left: 8px; top: 8px; right: 8px;
+      font-size: 16px; text-shadow: 0 1px 2px #000;
+    }
+  </style>
+</head>
+<body>
+  <video id="remote" autoplay playsinline></video>
+  <div id="status">Starting</div>
+  <script>
+    var params = new URLSearchParams(location.search);
+    var deviceId = params.get("device_id") || "";
+    var statusEl = document.getElementById("status");
+    var remoteEl = document.getElementById("remote");
+    var ws = null;
+    var pc = null;
+    var localStream = null;
+    var callId = null;
+    var iceServers = [{urls: "stun:stun.l.google.com:19302"}];
+    var pendingIce = [];
+    var statsTimer = null;
+
+    function tuneSdp(sdp, videoKbps) {
+      var nl = sdp.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+      var lines = sdp.split(nl);
+      var out = [];
+      var inVideo = false;
+      var added = false;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.indexOf("m=video") === 0) inVideo = true;
+        else if (inVideo && line.indexOf("m=") === 0) inVideo = false;
+        out.push(line);
+        if (inVideo && !added && line.indexOf("c=") === 0) {
+          out.push("b=AS:" + videoKbps);
+          added = true;
+        }
+      }
+      return out.join(nl);
+    }
+
+    function shrinkVideo(stream) {
+      var tracks = stream.getVideoTracks();
+      if (!tracks.length || !tracks[0].applyConstraints) return Promise.resolve();
+      return tracks[0].applyConstraints({
+        width: {ideal: 320, max: 320},
+        height: {ideal: 240, max: 240},
+        frameRate: {ideal: 10, max: 10}
+      }).catch(function() {});
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function send(obj) {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    }
+
+    function log(message) {
+      send({type: "log", message: String(message)});
+    }
+
+    function stopMedia() {
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        localStream.getTracks().forEach(function(track) { track.stop(); });
+        localStream = null;
+      }
+      remoteEl.srcObject = null;
+      pendingIce = [];
+      callId = null;
+      if (statsTimer) {
+        clearInterval(statsTimer);
+        statsTimer = null;
+      }
+    }
+
+    function noteReceiver(receiver) {
+      if (!receiver) return;
+      if ("playoutDelayHint" in receiver) receiver.playoutDelayHint = 0;
+      if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = 0;
+    }
+
+    function attachRemote(event) {
+      var stream = remoteEl.srcObject;
+      if (event.streams && event.streams[0]) {
+        stream = event.streams[0];
+      } else {
+        if (!stream) stream = new MediaStream();
+        stream.addTrack(event.track);
+      }
+      remoteEl.srcObject = stream;
+      noteReceiver(event.receiver);
+      var play = remoteEl.play();
+      if (play && play.catch) play.catch(function() {});
+    }
+
+    function openCall() {
+      navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1},
+        video: {width: {ideal: 320}, height: {ideal: 240}, frameRate: {ideal: 12}}
+      }).catch(function() {
+        return navigator.mediaDevices.getUserMedia({audio: true, video: true});
+      }).then(function(stream) {
+        localStream = stream;
+        var videoTrack = stream.getVideoTracks()[0];
+        var audioTrack = stream.getAudioTracks()[0];
+        log("camera " + (videoTrack ? videoTrack.readyState : "none") + " " + JSON.stringify(videoTrack && videoTrack.getSettings ? videoTrack.getSettings() : {}) + " mic " + (audioTrack ? audioTrack.readyState : "none"));
+        pc = new RTCPeerConnection({sdpSemantics: "unified-plan", iceServers: iceServers});
+        localStream.getTracks().forEach(function(track) { pc.addTrack(track, localStream); });
+        pc.ontrack = attachRemote;
+        pc.onicecandidate = function(event) {
+          if (!event.candidate) return;
+          send({
+            type: "ice",
+            call_id: callId,
+            candidate: {
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex
+            }
+          });
+        };
+        pc.oniceconnectionstatechange = function() {
+          send({type: "state", call_id: callId, state: pc.iceConnectionState});
+          if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+            setStatus("Connected");
+          }
+        };
+        return pc.createOffer();
+      }).then(function(offer) {
+        return pc.setLocalDescription(offer);
+      }).then(function() {
+        statsTimer = setInterval(sampleStats, 5000);
+        send({type: "offer", call_id: callId, sdp: pc.localDescription.sdp});
+        pendingIce.forEach(function(candidate) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function(err) {
+            log(err);
+          });
+        });
+        pendingIce = [];
+        setStatus("Calling");
+      }).catch(function(err) {
+        log(err);
+        setStatus("Camera error");
+        send({type: "hangup", call_id: callId});
+        stopMedia();
+      });
+    }
+
+    function sampleStats() {
+      if (!pc || !pc.getStats || !callId) return;
+      var summarize = function(report) {
+        var type = report.type || "";
+        var kind = report.mediaType || report.kind || "";
+        if ((type === "ssrc" || type === "outbound-rtp") && (report.bytesSent || report.bytesSent === 0) && kind) {
+          return kind + " sent " + report.bytesSent + " " + (report.googFrameWidthSent || report.frameWidth || "") + "x" + (report.googFrameHeightSent || report.frameHeight || "") + " " + (report.googFrameRateSent || report.framesPerSecond || "") + "fps";
+        }
+        if (report.googActiveConnection === "true" || report.nominated || report.selected) {
+          return "path " + (report.googLocalCandidateType || "") + " rtt " + (report.googRtt || report.currentRoundTripTime || "");
+        }
+        return "";
+      };
+      pc.getStats().then(function(stats) {
+        var parts = [];
+        stats.forEach(function(report) {
+          var line = summarize(report);
+          if (line) parts.push(line);
+        });
+        if (parts.length) log(parts.join(" | "));
+      }).catch(function() {});
+    }
+
+    function onMessage(event) {
+      var data = JSON.parse(event.data);
+      if (data.type === "ring") {
+        if (callId) {
+          send({type: "hangup", call_id: data.call_id});
+          return;
+        }
+        callId = data.call_id;
+        setStatus("Connecting");
+        openCall();
+      } else if (data.type === "answer" && pc && data.call_id === callId) {
+        pc.setRemoteDescription({type: "answer", sdp: data.sdp}).then(function() {
+          var queued = pendingIce;
+          pendingIce = [];
+          queued.forEach(function(candidate) {
+            pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function(err) { log(err); });
+          });
+        }).catch(function(err) {
+          log(err);
+          setStatus("Call failed");
+        });
+      } else if (data.type === "ice" && data.call_id === callId) {
+        if (!pc || !pc.remoteDescription) {
+          pendingIce.push(data.candidate);
+          return;
+        }
+        pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function(err) { log(err); });
+      } else if (data.type === "hangup" && data.call_id === callId) {
+        stopMedia();
+        setStatus("Ready");
+      }
+    }
+
+    function connect() {
+      ws = new WebSocket("wss://" + location.host + "/signal?role=device");
+      ws.onopen = function() {
+        setStatus("Ready");
+        send({
+          type: "hello",
+          device_id: deviceId,
+          version: params.get("version") || "",
+          hw: params.get("hw") || ""
+        });
+      };
+      ws.onmessage = onMessage;
+      ws.onclose = function() {
+        setStatus("Reconnecting");
+        stopMedia();
+        setTimeout(connect, 2000);
+      };
+    }
+
+    fetch("/ice.json").then(function(response) {
+      return response.json();
+    }).then(function(body) {
+      if (body.iceServers) iceServers = body.iceServers;
+    }).catch(function() {}).then(connect);
+  </script>
+</body>
+</html>

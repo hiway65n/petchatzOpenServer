@@ -1,0 +1,34 @@
+# Using the hub
+
+Open `https://<hub-ip>/` and accept the certificate warning.
+
+## Accounts
+
+The installer creates one admin. An admin sees every device that is online and can call any of them. An admin can also add people from the People section on the page.
+
+A user sees and calls only device ids assigned to that account. When you create a user, put the device id in the device field (the id the hub shows when the device is online, from the device itself). Passwords need at least 6 characters. Anyone signed in can change their own password from the page.
+
+Sessions are cookie tokens stored in `hub.db`. Signing out deletes the cookie on the hub.
+
+## A call
+
+1. The device must show as online. If it does not, the hub is down, the device JavaScript still points at the old cloud, or the kiosk has not reloaded since that change. See [device.md](device.md).
+2. Press Call on that device. Stay on the page. The remote picture is a muted video element, and the device's microphone is a separate audio element, so the browser can start playback from the click.
+3. The status line moves through the ICE state (`checking`, `connected`, `completed`) and also reports when a remote audio or video track arrives.
+4. Hang up from the page. Closing the tab also ends the call.
+
+One call at a time per device. A second caller gets an error until the first call ends.
+
+## What "online" means
+
+The device page opens `wss://<hub>/signal?role=device` and sends a hello with its device id, version, and hardware string. The hub keeps that in memory. A reboot of the hub forgets who is online until the device connects again. Users, assignments, and sessions are in SQLite and survive a restart.
+
+## Logs
+
+```bash
+journalctl -u petchatz-hub -f
+```
+
+Useful lines are `device online`, `call ... user ... device ...`, `device log:` (camera settings and bytes sent), and ICE state from the device. Bytes sent growing means the device is transmitting. A black picture in the computer browser with growing bytes is a playback or decoding problem on the computer. Bytes stuck at zero means the device is not sending.
+
+`tools/callcheck.py` logs in, asks the device for an offer, prints a few SDP lines, and hangs up. It does not answer, so it will not show audio or video. Pass the hub URL, admin user, password, and device id in the environment. Do not write those into the script.

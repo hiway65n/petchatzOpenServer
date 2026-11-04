@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PetChatz</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100vh; font-family: "Segoe UI", sans-serif;
+      background: #17202a; color: #f4f7fb;
+    }
+    main { max-width: 880px; margin: 0 auto; padding: 28px 18px 48px; }
+    h1 { font-weight: 650; letter-spacing: 0.02em; margin: 0 0 6px; }
+    .sub { color: #9aabbd; margin: 0 0 22px; }
+    form, section, .card {
+      background: #223140; border-radius: 14px; padding: 16px;
+      margin-bottom: 14px;
+    }
+    label { display: block; font-size: 13px; color: #c5d2e0; margin-bottom: 4px; }
+    input, select, button {
+      font: inherit; border-radius: 8px; border: 0; padding: 10px 12px;
+    }
+    input, select { width: 100%; box-sizing: border-box; margin-bottom: 10px; background: #101820; color: white; }
+    button { background: #3d8bfd; color: white; cursor: pointer; }
+    button.ghost { background: #3a4b5e; }
+    button.warn { background: #c4494a; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .device { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+    .on { background: #3dd68c; }
+    .off { background: #728291; }
+    video { width: 100%; max-height: 68vh; background: black; border-radius: 12px; }
+    .error { color: #ffb4b4; }
+    .hidden { display: none; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <p class="sub" id="subtitle">Sign in to visit a device.</p>
+
+    <form id="login" method="post" action="/login">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+      <p id="login-error" class="error hidden">Those credentials were not accepted.</p>
+    </form>
+
+    <section id="app" class="hidden">
+      <div class="row" style="margin-bottom: 12px;">
+        <strong id="who"></strong>
+        <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+      </div>
+      <div id="devices"></div>
+      <p id="call-error" class="error"></p>
+      <div id="stage" class="hidden">
+        <video id="remote" autoplay playsinline muted></video>
+        <audio id="remote-audio" autoplay></audio>
+        <p id="call-state"></p>
+        <button id="hangup" class="warn" type="button">Hang up</button>
+      </div>
+    </section>
+
+    <section id="admin" class="hidden">
+      <h2>People</h2>
+      <div class="grid">
+        <form id="create-user">
+          <label>New username</label>
+          <input name="username" required>
+          <label>Password</label>
+          <input name="password" type="password" required>
+          <label>Role</label>
+          <select name="role"><option value="user">User, one device</option><option value="admin">Admin, every device</option></select>
+          <label>Device id for a user</label>
+          <input name="device_id" placeholder="40a5efd62de3">
+          <button type="submit">Create account</button>
+        </form>
+        <form id="assign">
+          <label>Existing username</label>
+          <input name="username" required>
+          <label>Device id</label>
+          <input name="device_id" required>
+          <button type="submit">Allow this device</button>
+        </form>
+      </div>
+      <pre id="people"></pre>
+      <form id="change-pass">
+        <label>Current password</label>
+        <input name="old" type="password" required>
+        <label>New password</label>
+        <input name="new" type="password" required>
+        <button class="ghost" type="submit">Change my password</button>
+      </form>
+      <p id="admin-msg"></p>
+    </section>
+  </main>
+  <script>
+    var session = null;
+    var ws = null;
+    var pc = null;
+    var localStream = null;
+    var callId = null;
+    var iceServers = [];
+    var pendingIce = [];
+    var remoteEl = document.getElementById("remote");
+
+    function tuneSdp(sdp, videoKbps) {
+      var nl = sdp.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
+      var lines = sdp.split(nl);
+      var out = [];
+      var inVideo = false;
+      var added = false;
+      for (var i = 0; i < lines.length; i++) {
+        var line = lines[i];
+        if (line.indexOf("m=video") === 0) inVideo = true;
+        else if (inVideo && line.indexOf("m=") === 0) inVideo = false;
+        out.push(line);
+        if (inVideo && !added && line.indexOf("c=") === 0) {
+          out.push("b=AS:" + videoKbps);
+          added = true;
+        }
+      }
+      return out.join(nl);
+    }
+
+    function capOutgoingVideo() {
+      if (!pc || !pc.getSenders) return Promise.resolve();
+      var tasks = [];
+      pc.getSenders().forEach(function(sender) {
+        if (!sender.track || sender.track.kind !== "video" || !sender.getParameters || !sender.setParameters) return;
+        var params = sender.getParameters();
+        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 200000;
+        params.encodings[0].maxFramerate = 12;
+        tasks.push(sender.setParameters(params).catch(function() {}));
+      });
+      return Promise.all(tasks);
+    }
+
+    function show(id, on) {
+      document.getElementById(id).className = on ? "" : "hidden";
+    }
+
+    function send(obj) {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    }
+
+    function stopCall() {
+      if (pc) { pc.close(); pc = null; }
+      if (localStream) {
+        localStream.getTracks().forEach(function(track) { track.stop(); });
+        localStream = null;
+      }
+      remoteEl.srcObject = null;
+      pendingIce = [];
+      callId = null;
+      show("stage", false);
+    }
+
+    function renderDevices(list) {
+      var box = document.getElementById("devices");
+      box.innerHTML = "";
+      if (!list.length) {
+        box.innerHTML = "<div class='card'>No devices are assigned to this login yet.</div>";
+        return;
+      }
+      list.forEach(function(device) {
+        var card = document.createElement("div");
+        card.className = "card device";
+        var label = document.createElement("div");
+        label.innerHTML = "<span class='dot " + (device.online ? "on" : "off") + "'></span><strong>" +
+          device.device_id + "</strong><br><span class='sub'>" +
+          (device.online ? "Online" : "Offline") +
+          (device.version ? " · " + device.version : "") +
+          (device.in_call ? " · in a call" : "") + "</span>";
+        var button = document.createElement("button");
+        button.textContent = "Call";
+        button.disabled = !device.online || device.in_call;
+        button.onclick = function() {
+        remoteEl.muted = true;
+        remoteEl.play().catch(function() {});
+        document.getElementById("remote-audio").play().catch(function() {});
+        placeCall(device.device_id, button);
+      };
+        card.appendChild(label);
+        card.appendChild(button);
+        box.appendChild(card);
+      });
+    }
+
+    function placeCall(deviceId, button) {
+      document.getElementById("call-error").textContent = "";
+      button.disabled = true;
+      var media = navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1},
+        video: {width: {ideal: 320}, height: {ideal: 240}, frameRate: {ideal: 12}}
+      }).catch(function() {
+        return navigator.mediaDevices.getUserMedia({audio: true, video: false});
+      }).catch(function() { return null; });
+      media.then(function(stream) {
+        localStream = stream;
+        send({type: "call", device_id: deviceId});
+      }).catch(function(err) {
+        document.getElementById("call-error").textContent = String(err);
+        button.disabled = false;
+      });
+    }
+
+    function acceptOffer(data) {
+      callId = data.call_id;
+      show("stage", true);
+      document.getElementById("call-state").textContent = "Connecting";
+      pc = new RTCPeerConnection({sdpSemantics: "unified-plan", iceServers: iceServers});
+      if (localStream) {
+        localStream.getTracks().forEach(function(track) { pc.addTrack(track, localStream); });
+      }
+      pc.ontrack = function(event) {
+        var stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        if (event.track.kind === "audio") {
+          var audio = document.getElementById("remote-audio");
+          audio.srcObject = stream;
+          var audioPlay = audio.play();
+          if (audioPlay && audioPlay.catch) audioPlay.catch(function() {});
+        } else {
+          remoteEl.srcObject = stream;
+          remoteEl.muted = true;
+          var videoPlay = remoteEl.play();
+          if (videoPlay && videoPlay.catch) videoPlay.catch(function() {});
+        }
+        document.getElementById("call-state").textContent = "Receiving " + event.track.kind;
+      };
+      pc.onicecandidate = function(event) {
+        if (!event.candidate) return;
+        send({
+          type: "ice",
+          call_id: callId,
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex
+          }
+        });
+      };
+      pc.oniceconnectionstatechange = function() {
+        document.getElementById("call-state").textContent = pc.iceConnectionState;
+      };
+      pc.setRemoteDescription({type: "offer", sdp: data.sdp}).then(function() {
+        pendingIce.forEach(function(candidate) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function() {});
+        });
+        pendingIce = [];
+        return pc.createAnswer();
+      }).then(function(answer) {
+        return pc.setLocalDescription(answer);
+      }).then(function() {
+        return capOutgoingVideo();
+      }).then(function() {
+        send({type: "answer", call_id: callId, sdp: pc.localDescription.sdp});
+      }).catch(function(err) {
+        document.getElementById("call-error").textContent = String(err);
+      });
+    }
+
+    function connectSocket() {
+      ws = new WebSocket("wss://" + location.host + "/signal?role=user");
+      ws.onmessage = function(event) {
+        var data = JSON.parse(event.data);
+        if (data.type === "devices") renderDevices(data.devices || []);
+        else if (data.type === "ringing") {
+          callId = data.call_id;
+          show("stage", true);
+          document.getElementById("call-state").textContent = "Ringing the device";
+        }
+        else if (data.type === "offer") acceptOffer(data);
+        else if (data.type === "ice" && data.call_id === callId) {
+          if (!pc || !pc.remoteDescription) pendingIce.push(data.candidate);
+          else pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function() {});
+        }
+        else if (data.type === "state" && data.call_id === callId) {
+          document.getElementById("call-state").textContent = data.state + (data.detail ? " " + data.detail : "");
+        }
+        else if (data.type === "hangup") {
+          stopCall();
+        }
+        else if (data.type === "error") {
+          document.getElementById("call-error").textContent = data.message;
+          stopCall();
+        }
+      };
+      ws.onclose = function() { setTimeout(connectSocket, 2000); };
+    }
+
+    function loadPeople() {
+      fetch("/api/users").then(function(r) { return r.json(); }).then(function(body) {
+        document.getElementById("people").textContent = JSON.stringify(body.users, null, 2);
+      });
+    }
+
+    document.getElementById("hangup").onclick = function() {
+      if (callId) send({type: "hangup", call_id: callId});
+      stopCall();
+    };
+
+    document.getElementById("create-user").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/users", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          username: form.username.value,
+          password: form.password.value,
+          role: form.role.value,
+          device_id: form.device_id.value
+        })
+      }).then(function(r) {
+        document.getElementById("admin-msg").textContent = r.ok ? "Account created." : "Could not create that account.";
+        if (r.ok) { form.reset(); loadPeople(); }
+      });
+    };
+
+    document.getElementById("assign").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/assign", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username: form.username.value, device_id: form.device_id.value})
+      }).then(function(r) {
+        document.getElementById("admin-msg").textContent = r.ok ? "Device allowed." : "Could not assign that device.";
+        if (r.ok) loadPeople();
+      });
+    };
+
+    document.getElementById("change-pass").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/password", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({old: form.old.value, new: form.new.value})
+      }).then(function(r) {
+        document.getElementById("admin-msg").textContent = r.ok ? "Password changed." : "Password was not changed.";
+        if (r.ok) form.reset();
+      });
+    };
+
+    if (location.search.indexOf("error=1") !== -1) {
+      document.getElementById("login-error").className = "error";
+    }
+
+    fetch("/ice.json").then(function(r) { return r.json(); }).then(function(body) {
+      iceServers = body.iceServers || [];
+    });
+
+    fetch("/api/session").then(function(r) { return r.json(); }).then(function(body) {
+      if (!body.user) return;
+      session = body.user;
+      show("login", false);
+      show("app", true);
+      document.getElementById("subtitle").textContent = session.role === "admin"
+        ? "You can call any device that is online."
+        : "You can call the device assigned to this login.";
+      document.getElementById("who").textContent = session.username + " · " + session.role;
+      if (session.role === "admin") {
+        show("admin", true);
+        loadPeople();
+      }
+      connectSocket();
+    });
+  </script>
+</body>
+</html>

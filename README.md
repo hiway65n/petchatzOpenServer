@@ -1,0 +1,34 @@
+# PetChatz on-premises hub
+
+This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. An admin can call any device that is online. A normal user can call only the device assigned to them.
+
+This tree is the first working on-premises version. It is meant to stay private until two things are true: calls work from outside the local network, and the rough edges in [docs/status.md](docs/status.md) are cleaned up. Write new docs as if a stranger will read them later. Do not put live passwords, TURN credentials, private keys, or the hub database in git.
+
+## What you need
+
+- The PetChatz device, on the same LAN as the hub, with SSH available.
+- A Linux machine for the hub. The first one was a fresh Ubuntu 24.04 host. It needs to be up whenever someone wants to call.
+- A current desktop browser for the person placing the call. The device itself uses the Chromium 69 kiosk already installed on it.
+
+## Start here
+
+1. [Install the hub](docs/install.md).
+2. [Point the device at the hub](docs/device.md). That is a one-line change in the device's own page. The kiosk browser then loads the call page from the hub.
+3. [Sign in and call](docs/using.md).
+
+The design of the call path is in [docs/architecture.md](docs/architecture.md). What was learned about delay and one-way media is in [docs/call-quality.md](docs/call-quality.md).
+
+## Layout
+
+| Path | Role |
+| --- | --- |
+| `hub/server.py` | HTTPS signaling hub, login, and roles |
+| `hub/device.html` | Page the device kiosk loads during a call |
+| `hub/user.html` | Page a person uses in a normal browser |
+| `hub/petchatz-hub.service` | systemd unit |
+| `hub/config.example.json` | Shape of the config file created at install |
+| `deploy/setup.sh` | First-time install on Ubuntu |
+| `tools/reload_kiosk.py` | Reload the device page without restarting its services |
+| `tools/callcheck.py` | Check that a device returns an SDP offer |
+
+Certificates, `config.json`, `turn.conf`, and `hub.db` are created on the hub and are listed in `.gitignore`.
