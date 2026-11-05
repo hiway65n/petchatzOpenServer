@@ -22,6 +22,7 @@
       font: inherit; border-radius: 8px; border: 0; padding: 10px 12px;
     }
     input, select { width: 100%; box-sizing: border-box; margin-bottom: 10px; background: #101820; color: white; }
+    input[type="checkbox"] { width: auto; margin: 0 6px 0 0; }
     button { background: #3d8bfd; color: white; cursor: pointer; }
     button.ghost { background: #3a4b5e; }
     button.warn { background: #c4494a; }
@@ -34,7 +35,11 @@
     .error { color: #ffb4b4; }
     .hidden { display: none; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+    .cam-fields { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; align-items: end; }
+    @media (max-width: 700px) {
+      .grid { grid-template-columns: 1fr; }
+      .cam-fields { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -74,6 +79,9 @@
         <button class="ghost" type="submit">Save external address</button>
         <p class="sub">People away from home open https:// and this name. The proxy handles that page. The device keeps using the address inside the house.</p>
       </form>
+      <h2>Cameras</h2>
+      <p class="sub">The name is what people see. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards.</p>
+      <div id="cameras"></div>
       <h2>People</h2>
       <div class="grid">
         <form id="create-user">
@@ -180,11 +188,23 @@
         var card = document.createElement("div");
         card.className = "card device";
         var label = document.createElement("div");
-        label.innerHTML = "<span class='dot " + (device.online ? "on" : "off") + "'></span><strong>" +
-          device.device_id + "</strong><br><span class='sub'>" +
-          (device.online ? "Online" : "Offline") +
-          (device.version ? " · " + device.version : "") +
-          (device.in_call ? " · in a call" : "") + "</span>";
+        var title = document.createElement("strong");
+        title.textContent = device.nickname || device.device_id;
+        var detail = document.createElement("div");
+        detail.className = "sub";
+        var bits = [device.online ? "Online" : "Offline"];
+        if (device.nickname) bits.push(device.device_id);
+        if (device.version) bits.push(device.version);
+        if (device.width) bits.push(device.width + "x" + device.height + " @" + device.frame_rate);
+        if (device.in_call) bits.push("in a call");
+        detail.textContent = bits.join(" · ");
+        label.appendChild(document.createTextNode(""));
+        var dot = document.createElement("span");
+        dot.className = "dot " + (device.online ? "on" : "off");
+        label.appendChild(dot);
+        label.appendChild(title);
+        label.appendChild(document.createElement("br"));
+        label.appendChild(detail);
         var button = document.createElement("button");
         button.textContent = "Call";
         button.disabled = !device.online || device.in_call;
@@ -197,6 +217,89 @@
         card.appendChild(label);
         card.appendChild(button);
         box.appendChild(card);
+      });
+    }
+
+    function checkField(labelText, name, checked) {
+      var label = document.createElement("label");
+      var input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = name;
+      input.checked = !!checked;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(" " + labelText));
+      return label;
+    }
+
+    function field(labelText, name, value) {
+      var wrap = document.createElement("div");
+      var label = document.createElement("label");
+      label.textContent = labelText;
+      var input = document.createElement("input");
+      input.name = name;
+      input.value = value;
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    function renderCameras(list) {
+      var box = document.getElementById("cameras");
+      if (!box) return;
+      box.innerHTML = "";
+      if (!list.length) {
+        box.textContent = "No cameras have connected yet.";
+        return;
+      }
+      list.forEach(function(device) {
+        var form = document.createElement("form");
+        form.className = "card";
+        var fields = document.createElement("div");
+        fields.className = "cam-fields";
+        fields.appendChild(field("Name", "nickname", device.nickname || ""));
+        fields.appendChild(field("Width", "width", device.width || 320));
+        fields.appendChild(field("Height", "height", device.height || 240));
+        fields.appendChild(field("Frames per second", "frame_rate", device.frame_rate || 12));
+        var button = document.createElement("button");
+        button.className = "ghost";
+        button.type = "submit";
+        button.textContent = "Save";
+        fields.appendChild(button);
+        form.appendChild(fields);
+        var checks = document.createElement("div");
+        checks.className = "row";
+        checks.appendChild(checkField("Echo cancellation", "echo_cancel", device.echo_cancel !== false));
+        checks.appendChild(checkField("Noise suppression", "noise_suppression", device.noise_suppression !== false));
+        form.appendChild(checks);
+        var idLine = document.createElement("p");
+        idLine.className = "sub";
+        idLine.textContent = device.device_id + (device.online ? " · online" : " · offline");
+        form.appendChild(idLine);
+        form.onsubmit = function(event) {
+          event.preventDefault();
+          fetch("/api/device", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              device_id: device.device_id,
+              nickname: form.nickname.value,
+              width: form.width.value,
+              height: form.height.value,
+              frame_rate: form.frame_rate.value,
+              echo_cancel: form.echo_cancel.checked,
+              noise_suppression: form.noise_suppression.checked
+            })
+          }).then(function(r) {
+            if (r.ok) {
+              document.getElementById("admin-msg").textContent = "Saved " + (form.nickname.value || device.device_id) + ".";
+              return;
+            }
+            r.text().then(function(text) {
+              document.getElementById("admin-msg").textContent = text || "Camera settings were not saved.";
+            });
+          });
+        };
+        box.appendChild(form);
       });
     }
 
@@ -280,6 +383,7 @@
         if (data.type === "devices") {
           if (data.iceServers) iceServers = data.iceServers;
           renderDevices(data.devices || []);
+          if (session && session.role === "admin") renderCameras(data.devices || []);
         }
         else if (data.type === "ringing") {
           callId = data.call_id;

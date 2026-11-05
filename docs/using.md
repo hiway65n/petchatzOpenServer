@@ -8,6 +8,8 @@ The installer creates one admin. An admin sees every device that is online and c
 
 A user sees and calls only device ids assigned to that account. When you create a user, put the device id in the device field (the id the hub shows when the device is online, from the device itself). Passwords need at least 6 characters. Anyone signed in can change their own password from the page.
 
+An admin names each camera and sets its picture size, frame rate, echo cancellation, and noise suppression from the Cameras section. The device uses those values the next time it starts a call. Echo cancellation and noise suppression can be turned off separately when testing the microphone. Both start on. Turning echo cancellation off can let the speaker feed back into the microphone, because they sit next to each other. 320 by 240 at 12 frames per second is the starting point that these single-core boards can sustain. A higher frame rate is smoother until the device falls behind. The name is what people see on the call list. The device id stays on the card so it can still be assigned to an account.
+
 Sessions are cookie tokens stored in `hub.db`. Signing out deletes the cookie on the hub.
 
 ## A call
@@ -21,7 +23,7 @@ One call at a time per device. A second caller gets an error until the first cal
 
 ## What "online" means
 
-The device page opens `wss://<hub>/signal?role=device` and sends a hello with its device id, version, and hardware string. The hub keeps that in memory. A reboot of the hub forgets who is online until the device connects again. Users, assignments, and sessions are in SQLite and survive a restart.
+The device page opens `wss://<hub>/signal?role=device` and sends a hello with its device id, version, and hardware string. The hub keeps that in memory. A reboot of the hub forgets who is online until the device connects again. Users, assignments, sessions, and camera settings are in SQLite and survive a restart.
 
 ## Logs
 

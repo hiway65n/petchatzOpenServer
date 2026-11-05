@@ -27,6 +27,27 @@
     var iceServers = [{urls: "stun:stun.l.google.com:19302"}];
     var pendingIce = [];
     var statsTimer = null;
+    var capture = {width: 320, height: 240, frameRate: 12, echoCancellation: true, noiseSuppression: true};
+
+    function applyFlag(value, current) {
+      if (value === true || value === false) return value;
+      if (value === 1 || value === "1" || value === "true") return true;
+      if (value === 0 || value === "0" || value === "false") return false;
+      return current;
+    }
+
+    function applyCapture(data) {
+      if (!data) return;
+      var width = parseInt(data.width, 10);
+      var height = parseInt(data.height, 10);
+      var frameRate = parseInt(data.frameRate, 10);
+      if (width > 0) capture.width = width;
+      if (height > 0) capture.height = height;
+      if (frameRate > 0) capture.frameRate = frameRate;
+      capture.echoCancellation = applyFlag(data.echoCancellation, capture.echoCancellation);
+      capture.noiseSuppression = applyFlag(data.noiseSuppression, capture.noiseSuppression);
+      log("capture " + capture.width + "x" + capture.height + " @" + capture.frameRate + " echo " + capture.echoCancellation + " noise " + capture.noiseSuppression);
+    }
 
     function tuneSdp(sdp, videoKbps) {
       var nl = sdp.indexOf("\r\n") >= 0 ? "\r\n" : "\n";
@@ -109,8 +130,16 @@
 
     function openCall() {
       navigator.mediaDevices.getUserMedia({
-        audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1},
-        video: {width: {ideal: 320}, height: {ideal: 240}, frameRate: {ideal: 12}}
+        audio: {
+          echoCancellation: capture.echoCancellation,
+          noiseSuppression: capture.noiseSuppression,
+          channelCount: 1
+        },
+        video: {
+          width: {ideal: capture.width},
+          height: {ideal: capture.height},
+          frameRate: {ideal: capture.frameRate}
+        }
       }).catch(function() {
         return navigator.mediaDevices.getUserMedia({audio: true, video: true});
       }).then(function(stream) {
@@ -189,6 +218,9 @@
       if (data.type === "hello" && data.iceServers) {
         iceServers = data.iceServers;
         log("ice servers " + iceServers.length);
+        applyCapture(data.capture);
+      } else if (data.type === "capture") {
+        applyCapture(data);
       } else if (data.type === "ring") {
         if (callId) {
           send({type: "hangup", call_id: data.call_id});

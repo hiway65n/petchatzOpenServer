@@ -2,13 +2,14 @@
 
 Last checked against a real call on the first unit: video was acceptable in both directions. Audio from the computer to the device was good. Audio from the device back to the computer was delayed, and still usable.
 
-This is an on-premises LAN system. It is not ready to publish as a finished project.
+This is a working on-premises hub. Calls work on the LAN, and from outside the house when the proxy and TURN forwards in [off-lan.md](off-lan.md) are in place. The gaps below are still open.
 
 ## Works on the local network
 
 - The device finds the hub, comes online, and stays registered.
 - Sign-in, admin and user roles, and assigning a device to a user.
 - A two-way audio and video call between a desktop browser and the device kiosk.
+- Two different units on one hub, each with its own name, picture size, frame rate, and microphone processing.
 - A local TURN server so the two browsers can exchange media when a direct path is awkward.
 
 ## Works from outside the house
@@ -19,18 +20,16 @@ This is an on-premises LAN system. It is not ready to publish as a finished proj
 ## Not done
 
 - Treats and scent. The device still has those local commands. The hub does not send them.
-- A polished admin UI. Creating a user and assigning a device works. Editing and removing assignments does not.
-- Replacing the self-signed certificate with a name people can trust.
-- Hardening the device. Stock SSH and the expired kiosk certificate are left as they were, aside from the one server-name change.
-- More than one device has not been tested. The hub can track more than one, but only one unit has been on this software.
+- Editing and removing user assignments. Creating a user and assigning a device works. Each camera can be named, and its picture size, frame rate, echo cancellation, and noise suppression can be set from the page.
+- Replacing the self-signed certificate with a name people can trust, if the proxy is not already presenting one.
+- Hardening the device. Stock SSH and the expired kiosk certificate are left as they were, aside from the watchdog drop-in and the server-name change.
 
-## Before this repository is public
+## If you run this yourself
 
-- Before publishing, replace any house-specific addresses that were added while testing. The docs should keep using example names.
-- Remove or clearly mark anything that only applies to the first lab (specific addresses, the first device id, leftover experiments).
+- Keep house-specific addresses, device ids, and passwords out of git. The docs use example names. Live config, certificates, and `hub.db` stay on the hub.
 - Rotate any password that was ever typed into a chat, a shell history, or a ticket, and do not copy those values into the docs.
-- Review device SSH. An empty root password is acceptable only on a trusted LAN you control, and it should not be the published setup.
-- Re-read [docs/call-quality.md](call-quality.md) and delete advice that no longer matches the code.
+- Review device SSH. An empty root password is acceptable only on a trusted LAN you control.
+- Re-read [docs/call-quality.md](call-quality.md) before changing capture or SDP. Advice that no longer matches the code should be updated in the same change.
 
 ## Do not "tidy" these without a call test
 

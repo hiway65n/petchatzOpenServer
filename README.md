@@ -6,7 +6,7 @@ I created this for some friends who have a bunch of these petchatz devices and w
 
 This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. An admin can call any device that is online. A normal user can call only the device assigned to them.
 
-This tree is the first working on-premises version. It is meant to stay private until two things are true: calls work from outside the local network, and the rough edges in [docs/status.md](docs/status.md) are cleaned up. Write new docs as if a stranger will read them later. Do not put live passwords, TURN credentials, private keys, or the hub database in git.
+Calls work on the local network and, with a reverse proxy plus a direct TURN forward, from outside the house. Rough edges that are still open are listed in [docs/status.md](docs/status.md). Do not put live passwords, TURN credentials, private keys, or the hub database in git.
 
 ## What you need
 

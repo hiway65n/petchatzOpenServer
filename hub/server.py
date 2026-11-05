@@ -80,8 +80,22 @@ def connect_db():
                 user_id INTEGER NOT NULL,
                 expires INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS devices (
+                device_id TEXT PRIMARY KEY,
+                nickname TEXT NOT NULL DEFAULT '',
+                width INTEGER NOT NULL DEFAULT 320,
+                height INTEGER NOT NULL DEFAULT 240,
+                frame_rate INTEGER NOT NULL DEFAULT 12,
+                echo_cancel INTEGER NOT NULL DEFAULT 1,
+                noise_suppression INTEGER NOT NULL DEFAULT 1
+            );
             """
         )
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(devices)")}
+        if "echo_cancel" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN echo_cancel INTEGER NOT NULL DEFAULT 1")
+        if "noise_suppression" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN noise_suppression INTEGER NOT NULL DEFAULT 1")
         db.commit()
         count = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if count == 0:
@@ -219,6 +233,110 @@ def request_audience(request):
     return "lan"
 
 
+def device_profile(device_id):
+    with db_lock:
+        row = db.execute(
+            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression FROM devices WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "nickname": "",
+            "width": 320,
+            "height": 240,
+            "frame_rate": 12,
+            "echo_cancel": True,
+            "noise_suppression": True,
+        }
+    return {
+        "nickname": row["nickname"] or "",
+        "width": row["width"],
+        "height": row["height"],
+        "frame_rate": row["frame_rate"],
+        "echo_cancel": bool(row["echo_cancel"]),
+        "noise_suppression": bool(row["noise_suppression"]),
+    }
+
+
+def remember_device(device_id):
+    with db_lock:
+        db.execute(
+            "INSERT OR IGNORE INTO devices (device_id, nickname, width, height, frame_rate) VALUES (?, '', 320, 240, 12)",
+            (device_id,),
+        )
+        db.commit()
+
+
+def saved_device_ids():
+    with db_lock:
+        rows = db.execute("SELECT device_id FROM devices").fetchall()
+    return [row["device_id"] for row in rows]
+
+
+def device_record(device_id, info=None):
+    profile = device_profile(device_id)
+    info = info or {}
+    return {
+        "device_id": device_id,
+        "nickname": profile["nickname"],
+        "width": profile["width"],
+        "height": profile["height"],
+        "frame_rate": profile["frame_rate"],
+        "echo_cancel": profile["echo_cancel"],
+        "noise_suppression": profile["noise_suppression"],
+        "online": info.get("ws") is not None,
+        "version": info.get("version") or "",
+        "hw": info.get("hw") or "",
+        "in_call": bool(info.get("call_id")),
+    }
+
+
+def capture_payload(device_id):
+    profile = device_profile(device_id)
+    return {
+        "type": "capture",
+        "width": profile["width"],
+        "height": profile["height"],
+        "frameRate": profile["frame_rate"],
+        "echoCancellation": profile["echo_cancel"],
+        "noiseSuppression": profile["noise_suppression"],
+    }
+
+
+def clean_capture(body):
+    nickname = (body.get("nickname") or "").strip()
+    if len(nickname) > 40:
+        raise ValueError("nickname must be 40 characters or less")
+    if any(ord(ch) < 32 for ch in nickname):
+        raise ValueError("nickname cannot include control characters")
+    try:
+        width = int(body.get("width"))
+        height = int(body.get("height"))
+        frame_rate = int(body.get("frame_rate"))
+    except (TypeError, ValueError):
+        raise ValueError("width, height, and frame rate must be whole numbers")
+    if not 160 <= width <= 1280 or not 120 <= height <= 720:
+        raise ValueError("use a picture from 160x120 through 1280x720")
+    if not 5 <= frame_rate <= 30:
+        raise ValueError("use a frame rate from 5 through 30")
+    echo_cancel = clean_flag(body.get("echo_cancel"), "echo cancellation")
+    noise_suppression = clean_flag(body.get("noise_suppression"), "noise suppression")
+    return nickname, width, height, frame_rate, echo_cancel, noise_suppression
+
+
+def clean_flag(value, label):
+    if isinstance(value, bool):
+        return value
+    if value in (1, 0):
+        return bool(value)
+    text = str(value if value is not None else "").strip().lower()
+    if text in ("1", "true", "on", "yes"):
+        return True
+    if text in ("0", "false", "off", "no"):
+        return False
+    raise ValueError(label + " must be on or off")
+
+
 def device_snapshot(user):
     allowed = None if user["role"] == "admin" else set(assigned_devices(user["id"]))
     items = []
@@ -227,28 +345,12 @@ def device_snapshot(user):
         seen.add(device_id)
         if allowed is not None and device_id not in allowed:
             continue
-        items.append(
-            {
-                "device_id": device_id,
-                "online": info.get("ws") is not None,
-                "version": info.get("version") or "",
-                "hw": info.get("hw") or "",
-                "in_call": bool(info.get("call_id")),
-            }
-        )
-    if allowed:
-        for device_id in allowed:
-            if device_id not in seen:
-                items.append(
-                    {
-                        "device_id": device_id,
-                        "online": False,
-                        "version": "",
-                        "hw": "",
-                        "in_call": False,
-                    }
-                )
-    items.sort(key=lambda item: item["device_id"])
+        items.append(device_record(device_id, info))
+    extras = saved_device_ids() if allowed is None else list(allowed)
+    for device_id in extras:
+        if device_id not in seen:
+            items.append(device_record(device_id))
+    items.sort(key=lambda item: (item["nickname"] or item["device_id"]).lower())
     return items
 
 
@@ -487,6 +589,60 @@ async def api_settings_save(request):
     return web.json_response({"ok": True, "public_host": public_host})
 
 
+async def api_device_save(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise web.HTTPBadRequest(text="device_id is required")
+    try:
+        nickname, width, height, frame_rate, echo_cancel, noise_suppression = clean_capture(body)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    with db_lock:
+        db.execute(
+            """
+            INSERT INTO devices (
+                device_id, nickname, width, height, frame_rate, echo_cancel, noise_suppression
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+                nickname = excluded.nickname,
+                width = excluded.width,
+                height = excluded.height,
+                frame_rate = excluded.frame_rate,
+                echo_cancel = excluded.echo_cancel,
+                noise_suppression = excluded.noise_suppression
+            """,
+            (
+                device_id,
+                nickname,
+                width,
+                height,
+                frame_rate,
+                int(echo_cancel),
+                int(noise_suppression),
+            ),
+        )
+        db.commit()
+    log.info(
+        "camera %s set to %sx%s @ %s echo %s noise %s",
+        device_id,
+        width,
+        height,
+        frame_rate,
+        echo_cancel,
+        noise_suppression,
+    )
+    info = devices.get(device_id)
+    if info is not None:
+        await send_json(info.get("ws"), capture_payload(device_id))
+    await push_devices()
+    return web.json_response({"ok": True})
+
+
 async def api_password(request):
     user = request_user(request)
     if user is None:
@@ -579,7 +735,15 @@ async def device_loop(ws):
                 "call_id": previous.get("call_id"),
             }
             log.info("device online %s version %s", device_id, data.get("version"))
-            await send_json(ws, {"type": "hello", "iceServers": ice_servers("lan")})
+            remember_device(device_id)
+            await send_json(
+                ws,
+                {
+                    "type": "hello",
+                    "iceServers": ice_servers("lan"),
+                    "capture": capture_payload(device_id),
+                },
+            )
             await push_devices()
         elif kind == "offer" and device_id:
             call = calls.get(data.get("call_id"))
@@ -709,6 +873,7 @@ def make_app():
             web.post("/api/users", api_create_user),
             web.post("/api/assign", api_assign),
             web.post("/api/password", api_password),
+            web.post("/api/device", api_device_save),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
             web.get("/signal", signal),

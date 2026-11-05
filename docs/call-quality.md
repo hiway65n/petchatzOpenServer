@@ -4,7 +4,9 @@ The device has one usable Cortex-A9. It encodes its camera and decodes the compu
 
 ## What the pages do now
 
-Both sides request a modest camera: ideal 320×240 at about 12 frames per second, with echo cancellation on the microphone. The computer also caps its outgoing video sender at about 200 kbit/s and 12 fps after the answer is built. That cap is on the computer's outbound sender only.
+The device asks its camera for an ideal size and frame rate saved per camera. A new camera starts at 320×240 and 12 frames per second. Echo cancellation and noise suppression start on, and an admin can turn each one off on its own from the Cameras section. The hub sends those values with the device's hello, and again when they are saved. The device uses them the next time it opens the microphone and camera. A call already in progress keeps the old stream.
+
+The computer still requests a modest camera and caps its outgoing video sender at about 200 kbit/s and 12 fps after the answer is built. That cap is on the computer's outbound sender only. The computer's microphone processing is not part of the per-camera settings.
 
 The device page does not rewrite the SDP. It logs the camera track's `readyState` and `getSettings()`, then every few seconds logs outbound RTP bytes. Those lines show up in `journalctl -u petchatz-hub` as `device log:`.
 
@@ -20,7 +22,7 @@ These are recorded so the next edit does not repeat them.
 
 **`jitterBufferTarget = 0` and `playoutDelayHint = 0` on the computer.** Those were added to cut delay. Current Chrome then played nothing from the device, while Chromium 69 kept playing the computer's media. Removing the properties was not enough by itself, because the `b=AS` offer was still in place. Both are gone now.
 
-**Hard maximum constraints on the device camera.** `max` width, height, and frame rate, plus a second `applyConstraints` with the same max, were removed. The camera is asked for an ideal 320×240 at 12 fps and can fall back to `{audio: true, video: true}`.
+**Hard maximum constraints on the device camera.** `max` width, height, and frame rate, plus a second `applyConstraints` with the same max, were removed. The camera is asked for an ideal size and frame rate (the saved values, or 320×240 at 12 fps until an admin changes them) and can fall back to `{audio: true, video: true}`.
 
 ## If the device picture disappears again
 
