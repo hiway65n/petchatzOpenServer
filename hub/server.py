@@ -153,6 +153,32 @@ def assigned_devices(user_id):
     return [row["device_id"] for row in rows]
 
 
+def clean_device_ids(raw):
+    if not isinstance(raw, list):
+        raise ValueError("devices must be a list")
+    cleaned = []
+    for item in raw:
+        device_id = str(item or "").strip()
+        if not device_id:
+            continue
+        if len(device_id) > 64 or any(ord(ch) < 32 for ch in device_id):
+            raise ValueError("a device id is not valid")
+        if device_id not in cleaned:
+            cleaned.append(device_id)
+    return cleaned
+
+
+def replace_assignments(user_id, device_ids):
+    with db_lock:
+        db.execute("DELETE FROM assignments WHERE user_id = ?", (user_id,))
+        for device_id in device_ids:
+            db.execute(
+                "INSERT INTO assignments (user_id, device_id) VALUES (?, ?)",
+                (user_id, device_id),
+            )
+        db.commit()
+
+
 def session_user(token):
     if not token:
         return None
@@ -520,22 +546,28 @@ async def api_create_user(request):
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
     role = body.get("role") or "user"
-    device_id = (body.get("device_id") or "").strip()
     if role not in ("user", "admin"):
         raise web.HTTPBadRequest(text="role must be user or admin")
-    if not username or len(password) < 6:
-        raise web.HTTPBadRequest(text="username and a password of at least 6 characters are required")
+    if not username or len(username) > 40 or any(ord(ch) < 32 for ch in username):
+        raise web.HTTPBadRequest(text="username must be 1 to 40 characters")
+    if len(password) < 6:
+        raise web.HTTPBadRequest(text="password must be at least 6 characters")
+    device_ids = []
+    if role == "user":
+        raw_devices = body.get("devices")
+        if raw_devices is None and body.get("device_id"):
+            raw_devices = [body.get("device_id")]
+        if raw_devices is not None:
+            try:
+                device_ids = clean_device_ids(raw_devices)
+            except ValueError as exc:
+                raise web.HTTPBadRequest(text=str(exc))
     try:
         created = add_user(username, password, role)
     except sqlite3.IntegrityError:
         raise web.HTTPConflict(text="that username already exists")
-    if device_id and role == "user":
-        with db_lock:
-            db.execute(
-                "INSERT OR IGNORE INTO assignments (user_id, device_id) VALUES (?, ?)",
-                (created["id"], device_id),
-            )
-            db.commit()
+    if device_ids:
+        replace_assignments(created["id"], device_ids)
     await push_devices()
     return web.json_response({"ok": True})
 
@@ -546,16 +578,30 @@ async def api_assign(request):
         raise web.HTTPForbidden()
     body = await request.json()
     username = (body.get("username") or "").strip()
-    device_id = (body.get("device_id") or "").strip()
     target = user_by_name(username)
-    if target is None or not device_id:
-        raise web.HTTPBadRequest(text="username and device_id are required")
-    with db_lock:
-        db.execute(
-            "INSERT OR IGNORE INTO assignments (user_id, device_id) VALUES (?, ?)",
-            (target["id"], device_id),
-        )
-        db.commit()
+    if target is None:
+        raise web.HTTPBadRequest(text="that user does not exist")
+    if "devices" in body:
+        try:
+            device_ids = clean_device_ids(body.get("devices"))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        replace_assignments(target["id"], device_ids)
+        log.info("access for %s set to %s", username, ",".join(device_ids) or "(none)")
+    else:
+        device_id = (body.get("device_id") or "").strip()
+        if not device_id:
+            raise web.HTTPBadRequest(text="devices are required")
+        try:
+            device_ids = clean_device_ids([device_id])
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
+        with db_lock:
+            db.execute(
+                "INSERT OR IGNORE INTO assignments (user_id, device_id) VALUES (?, ?)",
+                (target["id"], device_ids[0]),
+            )
+            db.commit()
     await push_devices()
     return web.json_response({"ok": True})
 
@@ -648,17 +694,32 @@ async def api_password(request):
     if user is None:
         raise web.HTTPUnauthorized()
     body = await request.json()
-    current = user_by_name(user["username"])
-    if not check_password(body.get("old") or "", current["password"]):
-        raise web.HTTPForbidden(text="current password is wrong")
     new_password = body.get("new") or ""
     if len(new_password) < 6:
         raise web.HTTPBadRequest(text="new password must be at least 6 characters")
+    target_name = (body.get("username") or "").strip()
+    drop_sessions = False
+    if target_name and (target_name != user["username"] or user["role"] == "admin"):
+        if user["role"] != "admin":
+            raise web.HTTPForbidden(text="only an admin can change another password")
+        target = user_by_name(target_name)
+        if target is None:
+            raise web.HTTPBadRequest(text="that user does not exist")
+        user_id = target["id"]
+        drop_sessions = target_name != user["username"]
+        log.info("password set for %s", target_name)
+    else:
+        current = user_by_name(user["username"])
+        if not check_password(body.get("old") or "", current["password"]):
+            raise web.HTTPForbidden(text="current password is wrong")
+        user_id = user["id"]
     with db_lock:
         db.execute(
             "UPDATE users SET password = ? WHERE id = ?",
-            (hash_password(new_password), user["id"]),
+            (hash_password(new_password), user_id),
         )
+        if drop_sessions:
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         db.commit()
     return web.json_response({"ok": True})
 

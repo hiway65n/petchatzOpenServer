@@ -4,9 +4,9 @@ Open `https://<hub-ip>/` and accept the certificate warning.
 
 ## Accounts
 
-The installer creates one admin. An admin sees every device that is online and can call any of them. An admin can also add people from the People section on the page.
+The installer creates one admin. An admin sees every camera that has connected and can call any of them. From the People section an admin creates accounts, sets a new password for any account, and checks which cameras a user may call. A user can have more than one camera. Clearing every camera and saving removes that person's access. An admin account is not limited by those checkboxes.
 
-A user sees and calls only device ids assigned to that account. When you create a user, put the device id in the device field (the id the hub shows when the device is online, from the device itself). Passwords need at least 6 characters. Anyone signed in can change their own password from the page.
+Passwords need at least 6 characters. Anyone signed in can change their own password from the page, and that form asks for the current password. When an admin sets someone else's password, that person is signed out and must use the new one. The picture in a call is shown at the camera's own pixel size, and it shrinks to fit a phone screen.
 
 An admin names each camera and sets its picture size, frame rate, echo cancellation, and noise suppression from the Cameras section. The device uses those values the next time it starts a call. Echo cancellation and noise suppression can be turned off separately when testing the microphone. Both start on. Turning echo cancellation off can let the speaker feed back into the microphone, because they sit next to each other. 320 by 240 at 12 frames per second is the starting point that these single-core boards can sustain. A higher frame rate is smoother until the device falls behind. The name is what people see on the call list. The device id stays on the card so it can still be assigned to an account.
 

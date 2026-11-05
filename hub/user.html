@@ -6,12 +6,14 @@
   <title>PetChatz</title>
   <style>
     :root { color-scheme: dark; }
+    html { -webkit-text-size-adjust: 100%; }
     body {
       margin: 0; min-height: 100vh; font-family: "Segoe UI", sans-serif;
       background: #17202a; color: #f4f7fb;
     }
     main { max-width: 880px; margin: 0 auto; padding: 28px 18px 48px; }
-    h1 { font-weight: 650; letter-spacing: 0.02em; margin: 0 0 6px; }
+    h1 { font-weight: 650; letter-spacing: 0.02em; margin: 0 0 6px; font-size: 1.6rem; }
+    h2 { font-size: 1.15rem; margin: 18px 0 8px; }
     .sub { color: #9aabbd; margin: 0 0 22px; }
     form, section, .card {
       background: #223140; border-radius: 14px; padding: 16px;
@@ -19,11 +21,11 @@
     }
     label { display: block; font-size: 13px; color: #c5d2e0; margin-bottom: 4px; }
     input, select, button {
-      font: inherit; border-radius: 8px; border: 0; padding: 10px 12px;
+      font: inherit; font-size: 16px; border-radius: 8px; border: 0; padding: 10px 12px;
     }
     input, select { width: 100%; box-sizing: border-box; margin-bottom: 10px; background: #101820; color: white; }
-    input[type="checkbox"] { width: auto; margin: 0 6px 0 0; }
-    button { background: #3d8bfd; color: white; cursor: pointer; }
+    input[type="checkbox"] { width: 22px; height: 22px; margin: 0; flex: 0 0 auto; }
+    button { background: #3d8bfd; color: white; cursor: pointer; min-height: 44px; }
     button.ghost { background: #3a4b5e; }
     button.warn { background: #c4494a; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -31,14 +33,36 @@
     .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
     .on { background: #3dd68c; }
     .off { background: #728291; }
-    video { width: 100%; max-height: 68vh; background: black; border-radius: 12px; }
+    #stage { text-align: center; }
+    #remote {
+      display: block;
+      width: min(var(--frame-w, 320px), 100%);
+      max-height: 70vh;
+      height: auto;
+      aspect-ratio: var(--frame-ratio, 4 / 3);
+      margin: 0 auto 12px;
+      background: black;
+      border-radius: 12px;
+      object-fit: contain;
+    }
+    #hangup { width: 100%; max-width: 280px; }
     .error { color: #ffb4b4; }
     .hidden { display: none; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .cam-fields { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; align-items: end; }
+    .checks { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 12px; }
+    .checks label {
+      display: flex; align-items: center; gap: 10px;
+      min-height: 44px; margin: 0; color: #f4f7fb; font-size: 16px;
+    }
+    .pass-row { display: flex; gap: 8px; align-items: center; }
+    .pass-row input { margin: 0; flex: 1; min-width: 0; }
+    .person-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
     @media (max-width: 700px) {
-      .grid { grid-template-columns: 1fr; }
-      .cam-fields { grid-template-columns: 1fr 1fr; }
+      main { padding: 16px 12px 32px; }
+      .device { flex-direction: column; align-items: stretch; }
+      .device button, #hangup, .pass-row button { width: 100%; max-width: none; }
+      .cam-fields, .pass-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }
+      #hangup { position: sticky; bottom: 8px; }
     }
   </style>
 </head>
@@ -61,14 +85,23 @@
         <strong id="who"></strong>
         <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
       </div>
-      <div id="devices"></div>
       <p id="call-error" class="error"></p>
-      <div id="stage" class="hidden">
+      <div id="stage" class="card hidden">
         <video id="remote" autoplay playsinline muted></video>
         <audio id="remote-audio" autoplay></audio>
         <p id="call-state"></p>
         <button id="hangup" class="warn" type="button">Hang up</button>
       </div>
+      <div id="devices"></div>
+      <form id="change-pass" class="card">
+        <h2>Password</h2>
+        <label>Current password</label>
+        <input name="old" type="password" autocomplete="current-password" required>
+        <label>New password</label>
+        <input name="new" type="password" autocomplete="new-password" required>
+        <button class="ghost" type="submit">Change my password</button>
+        <p id="pass-msg"></p>
+      </form>
     </section>
 
     <section id="admin" class="hidden">
@@ -83,34 +116,24 @@
       <p class="sub">The name is what people see. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards.</p>
       <div id="cameras"></div>
       <h2>People</h2>
-      <div class="grid">
-        <form id="create-user">
-          <label>New username</label>
-          <input name="username" required>
-          <label>Password</label>
-          <input name="password" type="password" required>
-          <label>Role</label>
-          <select name="role"><option value="user">User, one device</option><option value="admin">Admin, every device</option></select>
-          <label>Device id for a user</label>
-          <input name="device_id" placeholder="40a5efd62de3">
-          <button type="submit">Create account</button>
-        </form>
-        <form id="assign">
-          <label>Existing username</label>
-          <input name="username" required>
-          <label>Device id</label>
-          <input name="device_id" required>
-          <button type="submit">Allow this device</button>
-        </form>
-      </div>
-      <pre id="people"></pre>
-      <form id="change-pass">
-        <label>Current password</label>
-        <input name="old" type="password" required>
-        <label>New password</label>
-        <input name="new" type="password" required>
-        <button class="ghost" type="submit">Change my password</button>
+      <p class="sub">A user can call only the cameras you check. An admin can call every camera. Setting a password here replaces the old one and signs that person out.</p>
+      <form id="create-user" class="card">
+        <label>New username</label>
+        <input name="username" autocomplete="off" required>
+        <label>Password</label>
+        <input name="password" type="password" autocomplete="new-password" required>
+        <label>Role</label>
+        <select id="create-role" name="role">
+          <option value="user">User</option>
+          <option value="admin">Admin, every camera</option>
+        </select>
+        <div id="create-devices-wrap">
+          <label>Cameras this person can call</label>
+          <div id="create-devices" class="checks"></div>
+        </div>
+        <button type="submit">Create account</button>
       </form>
+      <div id="people"></div>
       <p id="admin-msg"></p>
     </section>
   </main>
@@ -122,6 +145,8 @@
     var callId = null;
     var iceServers = [];
     var pendingIce = [];
+    var knownDevices = [];
+    var knownDeviceIds = "";
     var remoteEl = document.getElementById("remote");
 
     function tuneSdp(sdp, videoKbps) {
@@ -158,7 +183,22 @@
     }
 
     function show(id, on) {
-      document.getElementById(id).className = on ? "" : "hidden";
+      document.getElementById(id).classList.toggle("hidden", !on);
+    }
+
+    function fitRemote(width, height) {
+      var w = width > 0 ? width : 320;
+      var h = height > 0 ? height : 240;
+      remoteEl.style.setProperty("--frame-w", w + "px");
+      remoteEl.style.setProperty("--frame-ratio", w + " / " + h);
+    }
+
+    function sizeFor(deviceId) {
+      for (var i = 0; i < knownDevices.length; i++) {
+        var device = knownDevices[i];
+        if (device.device_id === deviceId) return device;
+      }
+      return null;
     }
 
     function send(obj) {
@@ -305,6 +345,8 @@
 
     function placeCall(deviceId, button) {
       document.getElementById("call-error").textContent = "";
+      var chosen = sizeFor(deviceId);
+      fitRemote(chosen && chosen.width, chosen && chosen.height);
       button.disabled = true;
       var media = navigator.mediaDevices.getUserMedia({
         audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1},
@@ -339,6 +381,9 @@
         } else {
           remoteEl.srcObject = stream;
           remoteEl.muted = true;
+          remoteEl.onloadedmetadata = function() {
+            if (remoteEl.videoWidth > 0) fitRemote(remoteEl.videoWidth, remoteEl.videoHeight);
+          };
           var videoPlay = remoteEl.play();
           if (videoPlay && videoPlay.catch) videoPlay.catch(function() {});
         }
@@ -382,8 +427,19 @@
         var data = JSON.parse(event.data);
         if (data.type === "devices") {
           if (data.iceServers) iceServers = data.iceServers;
-          renderDevices(data.devices || []);
-          if (session && session.role === "admin") renderCameras(data.devices || []);
+          knownDevices = data.devices || [];
+          var ids = knownDevices.map(function(device) { return device.device_id; }).join("\n");
+          var camerasChanged = ids !== knownDeviceIds;
+          knownDeviceIds = ids;
+          renderDevices(knownDevices);
+          if (session && session.role === "admin") {
+            var cameras = document.getElementById("cameras");
+            if (!cameras.contains(document.activeElement)) renderCameras(knownDevices);
+            var createBox = document.getElementById("create-devices");
+            if (camerasChanged && !createBox.contains(document.activeElement)) renderCreateDevices();
+            var people = document.getElementById("people");
+            if (camerasChanged && !people.contains(document.activeElement)) loadPeople();
+          }
         }
         else if (data.type === "ringing") {
           callId = data.call_id;
@@ -409,9 +465,141 @@
       ws.onclose = function() { setTimeout(connectSocket, 2000); };
     }
 
+    function deviceTitle(device) {
+      return device.nickname ? device.nickname + " (" + device.device_id + ")" : device.device_id;
+    }
+
+    function deviceChecks(selected) {
+      var box = document.createElement("div");
+      box.className = "checks";
+      if (!knownDevices.length) {
+        var empty = document.createElement("p");
+        empty.className = "sub";
+        empty.textContent = "No cameras have connected yet.";
+        box.appendChild(empty);
+        return box;
+      }
+      knownDevices.forEach(function(device) {
+        var label = document.createElement("label");
+        var input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = device.device_id;
+        input.checked = selected.indexOf(device.device_id) !== -1;
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(deviceTitle(device)));
+        box.appendChild(label);
+      });
+      return box;
+    }
+
+    function checkedIds(box) {
+      var ids = [];
+      var inputs = box.querySelectorAll("input[type=checkbox]");
+      for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].checked) ids.push(inputs[i].value);
+      }
+      return ids;
+    }
+
+    function renderCreateDevices() {
+      var box = document.getElementById("create-devices");
+      if (!box) return;
+      var selected = checkedIds(box);
+      box.innerHTML = "";
+      var choices = deviceChecks(selected);
+      while (choices.firstChild) box.appendChild(choices.firstChild);
+    }
+
+    function say(id, response, okText) {
+      var el = document.getElementById(id);
+      if (response.ok) {
+        el.textContent = okText;
+        return;
+      }
+      response.text().then(function(text) {
+        el.textContent = text || "That was not saved.";
+      });
+    }
+
+    function renderPeople(users) {
+      var box = document.getElementById("people");
+      box.innerHTML = "";
+      users.forEach(function(person) {
+        var card = document.createElement("form");
+        card.className = "card";
+        var head = document.createElement("div");
+        head.className = "person-head";
+        var name = document.createElement("strong");
+        name.textContent = person.username;
+        var role = document.createElement("span");
+        role.className = "sub";
+        role.textContent = person.role === "admin" ? "Admin, every camera" : "User";
+        head.appendChild(name);
+        head.appendChild(role);
+        card.appendChild(head);
+        var checks = null;
+        if (person.role !== "admin") {
+          var caption = document.createElement("label");
+          caption.textContent = "Cameras";
+          card.appendChild(caption);
+          checks = deviceChecks(person.devices || []);
+          card.appendChild(checks);
+          var saveAccess = document.createElement("button");
+          saveAccess.type = "submit";
+          saveAccess.textContent = "Save cameras";
+          card.appendChild(saveAccess);
+        }
+        var passLabel = document.createElement("label");
+        passLabel.textContent = "New password";
+        var passRow = document.createElement("div");
+        passRow.className = "pass-row";
+        var pass = document.createElement("input");
+        pass.type = "password";
+        pass.autocomplete = "new-password";
+        pass.placeholder = "At least 6 characters";
+        var setPass = document.createElement("button");
+        setPass.className = "ghost";
+        setPass.type = "button";
+        setPass.textContent = "Set password";
+        pass.onkeydown = function(event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            setPass.click();
+          }
+        };
+        passRow.appendChild(pass);
+        passRow.appendChild(setPass);
+        card.appendChild(passLabel);
+        card.appendChild(passRow);
+        card.onsubmit = function(event) {
+          event.preventDefault();
+          if (!checks) return;
+          fetch("/api/assign", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({username: person.username, devices: checkedIds(checks)})
+          }).then(function(r) {
+            say("admin-msg", r, "Saved cameras for " + person.username + ".");
+            if (r.ok) loadPeople();
+          });
+        };
+        setPass.onclick = function() {
+          fetch("/api/password", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({username: person.username, new: pass.value})
+          }).then(function(r) {
+            say("admin-msg", r, "Password set for " + person.username + ".");
+            if (r.ok) pass.value = "";
+          });
+        };
+        box.appendChild(card);
+      });
+    }
+
     function loadPeople() {
       fetch("/api/users").then(function(r) { return r.json(); }).then(function(body) {
-        document.getElementById("people").textContent = JSON.stringify(body.users, null, 2);
+        renderPeople(body.users || []);
       });
     }
 
@@ -430,25 +618,21 @@
           username: form.username.value,
           password: form.password.value,
           role: form.role.value,
-          device_id: form.device_id.value
+          devices: form.role.value === "user" ? checkedIds(document.getElementById("create-devices")) : []
         })
       }).then(function(r) {
-        document.getElementById("admin-msg").textContent = r.ok ? "Account created." : "Could not create that account.";
-        if (r.ok) { form.reset(); loadPeople(); }
+        say("admin-msg", r, "Account created.");
+        if (r.ok) {
+          form.reset();
+          show("create-devices-wrap", true);
+          renderCreateDevices();
+          loadPeople();
+        }
       });
     };
 
-    document.getElementById("assign").onsubmit = function(event) {
-      event.preventDefault();
-      var form = event.target;
-      fetch("/api/assign", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({username: form.username.value, device_id: form.device_id.value})
-      }).then(function(r) {
-        document.getElementById("admin-msg").textContent = r.ok ? "Device allowed." : "Could not assign that device.";
-        if (r.ok) loadPeople();
-      });
+    document.getElementById("create-role").onchange = function() {
+      show("create-devices-wrap", this.value !== "admin");
     };
 
     document.getElementById("public-host").onsubmit = function(event) {
@@ -473,7 +657,7 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({old: form.old.value, new: form.new.value})
       }).then(function(r) {
-        document.getElementById("admin-msg").textContent = r.ok ? "Password changed." : "Password was not changed.";
+        say("pass-msg", r, "Password changed.");
         if (r.ok) form.reset();
       });
     };
@@ -492,10 +676,11 @@
       show("app", true);
       document.getElementById("subtitle").textContent = session.role === "admin"
         ? "You can call any device that is online."
-        : "You can call the device assigned to this login.";
+        : "You can call the cameras assigned to this login.";
       document.getElementById("who").textContent = session.username + " · " + session.role;
       if (session.role === "admin") {
         show("admin", true);
+        renderCreateDevices();
         loadPeople();
         fetch("/api/settings").then(function(r) { return r.json(); }).then(function(body) {
           document.getElementById("public-host-input").value = body.public_host || "";
