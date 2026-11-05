@@ -54,3 +54,5 @@ On the LAN, callers need TCP 443 to the hub. Media needs UDP 3478 to the hub, an
 ## Certificate warning
 
 The first certificate is self-signed. Every new browser has to click through the warning. The device kiosk is already started with `--ignore-certificate-errors`, so it does not prompt. A public name and a trusted certificate are in [off-lan.md](off-lan.md).
+
+The next step is the device, and the watchdog drop-in comes before the server-name edit. See [device.md](device.md).

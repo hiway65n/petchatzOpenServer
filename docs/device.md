@@ -1,10 +1,61 @@
-# Point the device at the hub
+# Set up the device
 
-The device does not need a new call stack. Its kiosk browser already speaks WebRTC. On boot it loads a local page, waits until its own web socket on port 443 is up, then asks a configured host for `https://<host>/ping.json`. If that returns HTTP 200, it navigates to `https://<host>/petchatzDevice2.html` with the device id, software version, and hardware string.
+Do these steps in order. Install the watchdog drop-in before changing the server name. If the call page loads while the stock unit is still in place, the board reboots about every four minutes.
 
-The original host was `api2.petchatz.com`. Change it to the hub's LAN IP.
+The device already has the camera, microphone, and a Chromium 69 kiosk. This setup does not replace that software. It tells the kiosk to load the call page from your hub, and it stops the local service from rebooting the board when that page is on screen.
 
-## The one edit
+## 1. Sign in
+
+SSH to the device as `root`. On the first unit the password was empty, which is how that firmware shipped. Give it a password, or stop exposing SSH, before the house network is reachable from the internet.
+
+The SSH banner can take about 12 seconds. A connect timeout under about 45 seconds often fails before the banner arrives.
+
+From another computer on the LAN, SSH is the only port that accepts a connection. The device's own port 443 is for the kiosk, not for the hub.
+
+## 2. Install the watchdog drop-in
+
+`petchatz-ws` is the process behind `wss://localhost`. The menu page keeps it alive. The call page used to leave it unattended, and the unit is set to reboot the whole board when that happens.
+
+Two different pings are easy to mix up:
+
+| Message | Where | What it does |
+| --- | --- | --- |
+| `/ping` | Text frame on `wss://localhost` | Tells `petchatz-ws` to pet its systemd watchdog |
+| `GET /ping.json` | HTTPS request to the hub | Tells the menu page that the hub is up |
+
+The stock menu, after it opens the local socket, sends `/ping` every 5 seconds. That code is in `/var/www/http/scripts/deviceSettingsMenu.js`. `petchatz-ws` has `WatchdogSec=20`. If 20 seconds pass with no pet, systemd aborts the process. The stock unit also has `FailureAction=reboot` and `StartLimitAction=reboot`. The abort handler in this binary wedges, systemd cannot finish the stop cleanly, and the board reboots. From the outside that looks like a fresh boot every four minutes, because the boot, the missed pet, and the stuck shutdown add up to about that long.
+
+This repo's call page opens `wss://localhost` and sends `/ping` every 5 seconds, which is what the menu used to do. That pet is required, and it is not a substitute for the drop-in. A missed pet would still reboot the board until the unit is changed.
+
+The drop-in keeps the 20 second watchdog, so a stuck `petchatz-ws` is still restarted. It turns off the two actions that reboot the board, and it shortens the stop timeout so a wedged shutdown is killed instead of sitting there.
+
+From a checkout of this repo, copy the file to the device and install it:
+
+```bash
+scp deploy/petchatz-ws-no-reboot.conf root@<device-ip>:/tmp/petchatz-ws-no-reboot.conf
+ssh root@<device-ip>
+sed -i 's/\r$//' /tmp/petchatz-ws-no-reboot.conf
+mkdir -p /etc/systemd/system/petchatz-ws.service.d
+cp /tmp/petchatz-ws-no-reboot.conf /etc/systemd/system/petchatz-ws.service.d/override.conf
+systemctl daemon-reload
+systemctl restart petchatz-ws.service
+```
+
+`daemon-reload` has to happen before the restart. The restart applies to `petchatz-ws` only. Do not restart `petchatz.service` here. That unit is the screen.
+
+Check the result before continuing:
+
+```bash
+systemctl show petchatz-ws.service -p ActiveState,Result,WatchdogUSec,FailureAction,StartLimitAction
+```
+
+You want `ActiveState=active`, `Result=success`, `WatchdogUSec=20s`, `FailureAction=none`, and `StartLimitAction=none`.
+
+If the old process does not exit within 10 seconds, systemd reports a timeout and starts a new one. That is the stop limit in the drop-in. The board should stay up. Continue only after `ActiveState` is `active`.
+
+If the board is already in the reboot loop, sign in during the first minute after it comes back, then run the commands above before it cycles again.
+
+## 3. Point the menu at the hub
 
 File on the device:
 
@@ -16,54 +67,57 @@ Keep a copy first:
 cp /var/www/http/scripts/deviceSettingsMenu.js /var/www/http/scripts/deviceSettingsMenu.js.bak
 ```
 
-Set the server variable to the hub address, with no scheme and no port:
+Set the server variable to the hub's LAN address, with no scheme and no port:
 
 ```javascript
 var petchatz_server = "192.168.1.20";
 ```
 
-Use the same IP you passed to `deploy/setup.sh`. The first lab used a hub at `192.168.50.95` and a device at `192.168.50.58`. Those addresses are an example of a working LAN, not part of the software.
+Use the same address you passed to `deploy/setup.sh`. Leave this as the LAN address even after you add an outside name. The kiosk should not be sent to the public name. See [off-lan.md](off-lan.md).
 
-The page that probes the hub is served from `https://localhost`, so the hub's `/ping.json` response includes `Access-Control-Allow-Origin: *`. Without that header the device console shows status 0 and stays on "server not present" even though the hub log shows HTTP 200.
+On boot the kiosk waits until `wss://localhost` is up, then requests `https://<petchatz_server>/ping.json`. HTTP 200 sends it to `https://<petchatz_server>/petchatzDevice2.html` with the device id, software version, and hardware string. The hub answers `/ping.json` with `Access-Control-Allow-Origin: *` because that request comes from `https://localhost`. Without that header the device console shows status 0 and stays on "server not present" even when the hub log shows HTTP 200.
 
-## Reload the kiosk page
+## 4. Reload the call page
 
-The kiosk is `petchatz.service` (a user X session running Chromium). The local web socket process is `petchatz-ws.service`.
+Chromium is started with `--remote-debugging-port=9222` on `127.0.0.1`. Use that to reload. Restarting `petchatz.service` to pick up a page is how the watchdog gets tripped while the board is busy.
 
-`petchatz-ws.service` has `WatchdogSec=20`, `StartLimitBurst=5`, and `FailureAction=reboot`. Restarting `petchatz.service` while the board is busy can trip that watchdog and reboot the device. Do not use `systemctl restart petchatz.service` to pick up a new page.
-
-Chromium is started with `--remote-debugging-port=9222` on `127.0.0.1`. From a shell on the device:
+Copy `tools/reload_kiosk.py` to the device and run it there. Python 3.5 is enough. Strip CR characters if the copy came from Windows:
 
 ```bash
+sed -i 's/\r$//' /tmp/reload_kiosk.py
 python3 /tmp/reload_kiosk.py
 ```
 
-Copy `tools/reload_kiosk.py` to the device first. If you copy it from Windows, strip CR characters (`sed -i 's/\r$//' /tmp/reload_kiosk.py`). The script talks to the debug port and evaluates `location.reload(true)`. Python 3.5 on the device is enough. The script does not use f-strings.
+The script evaluates `location.reload(true)` in the kiosk. A full start of the kiosk, including a reboot, also loads the edited JavaScript. A debug reload does not wipe the Chromium profile. A full start does (`rm -rf /tmp/chromium` in `.xinitrc`).
 
-After a reload the hub log should show `device online` with that unit's id. The id comes from the device (`/device/get_id` on its local socket, or the query string of the call page). It looks like `40a5efd62de3`. Assign that id to a user when you create one.
+## 5. Confirm it stayed up
 
-User data for Chromium is wiped on each full start of the kiosk (`rm -rf /tmp/chromium` in `.xinitrc`). A reload through the debug port does not wipe it. A reboot does a full start and loads the edited JavaScript again.
+On the hub:
 
-## What the device actually is
+```bash
+journalctl -u petchatz-hub -f
+```
 
-Checked on the first unit, software `4.2.0rc1`:
+After the reload you should see `device online` and `device log: local watchdog on`. `local watchdog off` appears only while `petchatz-ws` is restarting. It should be followed by `local watchdog on` within a few seconds.
 
-- NXP i.MX6, one Cortex-A9 online, about 512 MB RAM, kernel `4.9.88-linux-anser`.
-- Hostname `imx6dlpetchatz`. Camera nodes under `/dev/video*`, ALSA card 0.
-- Chromium 69.0.3497.100 in a 320×240 kiosk, with autoplay allowed and a fake media-permission prompt so the camera can start.
-- `petchatz-ws` on port 443. From another computer on the LAN, only SSH (port 22) accepted a connection. The kiosk reaches port 443 on the device itself. Do not plan on driving the local socket from the hub.
-- The native `/stream/webrtc-start-chat` and accept-user-offer commands are stubs. The live call is the Chromium page, not those commands. `/stream/webrtc-start-silent-mode` still contains a native WebRTC offer path and was not used.
-- SSH on the first unit is OpenSSH 7.5. The banner can take around 12 seconds, so short connect timeouts fail before the banner arrives. Use a timeout of about 45 seconds. That unit accepted `root` with an empty password. That is a property of the shipped firmware, not a recommended setup. Shut it down or give it a password before this system is reachable from outside the LAN.
-- The TLS certificate shipped in `/opt/petchatz/` expired in 2016. The kiosk ignores certificate errors. The hub still has to offer TLS 1.2; Chromium 69 resets a TLS 1.3-only handshake.
+On the device, `uptime` should keep growing past five minutes, and `journalctl -u petchatz-ws` should not show `Watchdog timeout`.
 
-Leave the second CPU alone. Trying to online it coincided with a reboot. One core is a reason the call has to stay small. See [call-quality.md](call-quality.md).
+The device id is the `device_id` query on the call page, and the id in that hub log line. It is twelve hex characters. Assign that id to a user when you create one.
 
-## Watchdog
+## What the drop-in does not change
 
-`petchatz-ws` is a systemd notify service with a 20 second watchdog. The stock menu page pets it by sending `/ping` on `wss://localhost` every 5 seconds. The call page has to keep doing that after it leaves the menu. If the pings stop, systemd aborts `petchatz-ws`. The unit's `FailureAction=reboot` and `StartLimitAction=reboot` then reboot the board, which showed up as a reboot about every four minutes.
+`petchatz-ws` still has to receive `/ping` about every 5 seconds once the call page is up. The page in this repo does that. If you replace `hub/device.html` and drop that socket, the service will be restarted every 20 seconds. The board will stay up, and the kiosk's local commands will flap.
 
-`deploy/petchatz-ws-no-reboot.conf` is a drop-in for the device. It leaves the 20 second watchdog in place so a stuck process is restarted, and it turns off the actions that reboot the board. The call page opens `wss://localhost` and sends `/ping` every 5 seconds.
+Treats, scent, and the other local commands still go to `wss://localhost` as plain-text paths such as `/device/get_id` and `/settings/get_treat_count`. The hub does not send those yet.
 
-## Local commands that are not part of a call
+## Leave these alone
 
-The kiosk's local socket still answers plain-text paths such as `/device/get_id`, `/get_software_version`, `/settings/get_treat_count`, and `/network/get_status`. Treat and scent commands exist on the device and are not wired through the hub yet.
+- Do not restart `petchatz.service` to reload a page. Use `tools/reload_kiosk.py`.
+- Do not turn the second CPU on. The board has one Cortex-A9 online. Trying to online the other one coincided with a reboot. One core is also why the call has to stay small. See [call-quality.md](call-quality.md).
+- Do not drive `wss://localhost` from the hub. That socket is on the device, for the kiosk.
+
+## The unit that was checked
+
+Software `4.2.0rc1`, hostname `imx6dlpetchatz`, kernel `4.9.88-linux-anser`, about 512 MB RAM, Chromium 69 in a 320×240 kiosk. The certificate in `/opt/petchatz/` expired in 2016. The kiosk is started with certificate errors ignored. The hub still has to offer TLS 1.2, because this Chromium resets a TLS 1.3-only handshake.
+
+The live call is the kiosk page. The native `/stream/webrtc-start-chat` and accept-user-offer commands are stubs.

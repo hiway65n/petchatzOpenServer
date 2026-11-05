@@ -17,7 +17,7 @@ This tree is the first working on-premises version. It is meant to stay private 
 ## Start here
 
 1. [Install the hub](docs/install.md).
-2. [Point the device at the hub](docs/device.md). That is a one-line change in the device's own page. The kiosk browser then loads the call page from the hub.
+2. [Set up the device](docs/device.md). Install the watchdog drop-in first, then point the kiosk at the hub. Skipping the drop-in makes the board reboot about every four minutes.
 3. [Sign in and call](docs/using.md).
 4. When a call works on the LAN, [open it to the outside](docs/off-lan.md). The page goes through a reverse proxy. The audio and video relay is still a direct forward to the hub.
 
