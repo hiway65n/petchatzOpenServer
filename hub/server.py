@@ -68,7 +68,9 @@ def connect_db():
                 id INTEGER PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
-                role TEXT NOT NULL
+                role TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                expires_at INTEGER
             );
             CREATE TABLE IF NOT EXISTS assignments (
                 user_id INTEGER NOT NULL,
@@ -96,6 +98,11 @@ def connect_db():
             db.execute("ALTER TABLE devices ADD COLUMN echo_cancel INTEGER NOT NULL DEFAULT 1")
         if "noise_suppression" not in columns:
             db.execute("ALTER TABLE devices ADD COLUMN noise_suppression INTEGER NOT NULL DEFAULT 1")
+        user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "enabled" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        if "expires_at" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN expires_at INTEGER")
         db.commit()
         count = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if count == 0:
@@ -126,23 +133,49 @@ def add_user(username, password, role):
         )
         db.commit()
         return db.execute(
-            "SELECT id, username, role FROM users WHERE username = ?", (username,)
+            "SELECT id, username, role, enabled, expires_at FROM users WHERE username = ?",
+            (username,),
         ).fetchone()
 
 
 def user_by_id(user_id):
     with db_lock:
         return db.execute(
-            "SELECT id, username, role FROM users WHERE id = ?", (user_id,)
+            "SELECT id, username, role, enabled, expires_at FROM users WHERE id = ?",
+            (user_id,),
         ).fetchone()
 
 
 def user_by_name(username):
     with db_lock:
         return db.execute(
-            "SELECT id, username, password, role FROM users WHERE username = ?",
+            "SELECT id, username, password, role, enabled, expires_at FROM users WHERE username = ?",
             (username,),
         ).fetchone()
+
+
+def account_open(row, now=None):
+    if row is None or not row["enabled"]:
+        return False
+    expires_at = row["expires_at"]
+    if expires_at is not None and int(expires_at) <= int(now or time.time()):
+        return False
+    return True
+
+
+def other_open_admins(except_id):
+    now = int(time.time())
+    with db_lock:
+        rows = db.execute(
+            """
+            SELECT id FROM users
+            WHERE role = 'admin' AND enabled = 1
+              AND (expires_at IS NULL OR expires_at > ?)
+              AND id != ?
+            """,
+            (now, except_id),
+        ).fetchall()
+    return len(rows) > 0
 
 
 def assigned_devices(user_id):
@@ -189,9 +222,15 @@ def session_user(token):
         ).fetchone()
         if row is None or row["expires"] < now:
             return None
-        return db.execute(
-            "SELECT id, username, role FROM users WHERE id = ?", (row["user_id"],)
+        user = db.execute(
+            "SELECT id, username, role, enabled, expires_at FROM users WHERE id = ?",
+            (row["user_id"],),
         ).fetchone()
+        if not account_open(user, now):
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (row["user_id"],))
+            db.commit()
+            return None
+        return user
 
 
 def request_user(request):
@@ -431,6 +470,14 @@ def read_html(name):
         return fh.read()
 
 
+def page(name, content_type):
+    return web.Response(
+        text=read_html(name),
+        content_type=content_type,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def ping(_request):
     response = web.json_response({"status": "ok"})
     # The kiosk page is https://localhost and probes this URL with XHR.
@@ -455,12 +502,28 @@ async def device_page(_request):
     )
 
 
-async def user_page(_request):
-    return web.Response(
-        text=read_html("user.html"),
-        content_type="text/html",
-        headers={"Cache-Control": "no-store"},
-    )
+async def login_page(_request):
+    return page("login.html", "text/html")
+
+
+async def calls_page(_request):
+    return page("calls.html", "text/html")
+
+
+async def users_page(_request):
+    return page("users.html", "text/html")
+
+
+async def devices_page(_request):
+    return page("devices.html", "text/html")
+
+
+async def app_css(_request):
+    return page("app.css", "text/css")
+
+
+async def common_js(_request):
+    return page("common.js", "text/javascript")
 
 
 async def login(request):
@@ -470,6 +533,8 @@ async def login(request):
     row = user_by_name(username)
     if row is None or not check_password(password, row["password"]):
         raise web.HTTPFound("/?error=1")
+    if not account_open(row):
+        raise web.HTTPFound("/?error=2")
     token = secrets.token_urlsafe(32)
     expires = int(time.time()) + 14 * 24 * 3600
     with db_lock:
@@ -478,7 +543,7 @@ async def login(request):
             (token, row["id"], expires),
         )
         db.commit()
-    response = web.HTTPFound("/")
+    response = web.HTTPFound("/calls")
     response.set_cookie(
         "sid", token, max_age=14 * 24 * 3600, httponly=True, secure=True, samesite="Lax"
     )
@@ -517,7 +582,9 @@ async def api_users(request):
     if user is None or user["role"] != "admin":
         raise web.HTTPForbidden()
     with db_lock:
-        rows = db.execute("SELECT id, username, role FROM users ORDER BY username").fetchall()
+        rows = db.execute(
+            "SELECT id, username, role, enabled, expires_at FROM users ORDER BY username"
+        ).fetchall()
         assignments = db.execute(
             "SELECT user_id, device_id FROM assignments"
         ).fetchall()
@@ -530,6 +597,9 @@ async def api_users(request):
                 {
                     "username": row["username"],
                     "role": row["role"],
+                    "enabled": bool(row["enabled"]),
+                    "expires_at": row["expires_at"],
+                    "expired": row["expires_at"] is not None and int(row["expires_at"]) <= int(time.time()),
                     "devices": by_user.get(row["id"], []),
                 }
                 for row in rows
@@ -603,6 +673,51 @@ async def api_assign(request):
             )
             db.commit()
     await push_devices()
+    return web.json_response({"ok": True})
+
+
+async def api_account(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    target = user_by_name(username)
+    if target is None:
+        raise web.HTTPBadRequest(text="that user does not exist")
+    try:
+        enabled = clean_flag(body.get("enabled"), "enabled") if "enabled" in body else bool(target["enabled"])
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    if "expires_at" in body:
+        raw_expires = body.get("expires_at")
+        if raw_expires in (None, ""):
+            expires_at = None
+        else:
+            try:
+                expires_at = int(raw_expires)
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text="expiration must be a time")
+            if expires_at < 0 or expires_at > 4000000000:
+                raise web.HTTPBadRequest(text="expiration is not a real time")
+    else:
+        expires_at = target["expires_at"]
+    if target["id"] == user["id"] and not enabled:
+        raise web.HTTPBadRequest(text="you cannot turn off the account you are signed in with")
+    if target["id"] == user["id"] and expires_at is not None and int(expires_at) <= int(time.time()):
+        raise web.HTTPBadRequest(text="choose a future time, or leave expiration empty")
+    still_open = enabled and (expires_at is None or int(expires_at) > int(time.time()))
+    if target["role"] == "admin" and not still_open and not other_open_admins(target["id"]):
+        raise web.HTTPBadRequest(text="keep at least one admin that can sign in")
+    with db_lock:
+        db.execute(
+            "UPDATE users SET enabled = ?, expires_at = ? WHERE id = ?",
+            (int(enabled), expires_at, target["id"]),
+        )
+        if not still_open:
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (target["id"],))
+        db.commit()
+    log.info("account %s enabled %s expires %s", username, enabled, expires_at or "never")
     return web.json_response({"ok": True})
 
 
@@ -687,6 +802,29 @@ async def api_device_save(request):
         await send_json(info.get("ws"), capture_payload(device_id))
     await push_devices()
     return web.json_response({"ok": True})
+
+
+async def api_device_remove(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise web.HTTPBadRequest(text="device_id is required")
+    info = devices.get(device_id)
+    if info and info.get("call_id"):
+        await end_call(info["call_id"], "device removed")
+    with db_lock:
+        db.execute("DELETE FROM assignments WHERE device_id = ?", (device_id,))
+        db.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+        db.commit()
+    still_online = info is not None and info.get("ws") is not None and not info["ws"].closed
+    if not still_online:
+        devices.pop(device_id, None)
+    log.info("device %s removed online %s", device_id, still_online)
+    await push_devices()
+    return web.json_response({"ok": True, "still_online": still_online})
 
 
 async def api_password(request):
@@ -925,7 +1063,12 @@ def make_app():
             web.get("/ping.json", ping),
             web.get("/ice.json", ice),
             web.get("/petchatzDevice2.html", device_page),
-            web.get("/", user_page),
+            web.get("/", login_page),
+            web.get("/calls", calls_page),
+            web.get("/users", users_page),
+            web.get("/devices", devices_page),
+            web.get("/app.css", app_css),
+            web.get("/common.js", common_js),
             web.post("/login", login),
             web.post("/logout", logout),
             web.get("/api/session", api_session),
@@ -933,8 +1076,10 @@ def make_app():
             web.get("/api/users", api_users),
             web.post("/api/users", api_create_user),
             web.post("/api/assign", api_assign),
+            web.post("/api/account", api_account),
             web.post("/api/password", api_password),
             web.post("/api/device", api_device_save),
+            web.post("/api/device/remove", api_device_remove),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
             web.get("/signal", signal),

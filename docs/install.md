@@ -30,7 +30,7 @@ Open `https://<hub-ip>/` from another computer on the LAN and accept the certifi
 `setup.sh` will not overwrite an existing hub. Copy the changed files and restart only the hub service:
 
 ```bash
-sudo cp hub/server.py hub/device.html hub/user.html /opt/petchatz-hub/
+sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/app.css hub/common.js /opt/petchatz-hub/
 sudo systemctl restart petchatz-hub
 ```
 

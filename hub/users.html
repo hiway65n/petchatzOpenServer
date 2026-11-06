@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>People · PetChatz</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <nav class="nav">
+      <a href="/calls">Calls</a>
+      <a class="here" href="/users">People</a>
+      <a href="/devices">Devices</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <p class="sub">A user can call only the cameras you check. An admin can call every camera. Turning an account off, or setting an expiration that has passed, signs that person out.</p>
+    <form id="create-user" class="card">
+      <h2>New account</h2>
+      <label>Username</label>
+      <input name="username" autocomplete="off" required>
+      <label>Password</label>
+      <input name="password" type="password" autocomplete="new-password" required>
+      <label>Role</label>
+      <select id="create-role" name="role">
+        <option value="user">User</option>
+        <option value="admin">Admin, every camera</option>
+      </select>
+      <div id="create-devices-wrap">
+        <label>Cameras this person can call</label>
+        <div id="create-devices" class="checks"></div>
+      </div>
+      <button type="submit">Create account</button>
+    </form>
+    <div id="people"></div>
+    <p id="admin-msg"></p>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    var knownDevices = [];
+
+    function deviceTitle(device) {
+      return device.nickname ? device.nickname + " (" + device.device_id + ")" : device.device_id;
+    }
+
+    function deviceChecks(selected) {
+      var box = document.createElement("div");
+      box.className = "checks";
+      if (!knownDevices.length) {
+        var empty = document.createElement("p");
+        empty.className = "sub";
+        empty.textContent = "No cameras have connected yet.";
+        box.appendChild(empty);
+        return box;
+      }
+      knownDevices.forEach(function(device) {
+        var label = document.createElement("label");
+        var input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = device.device_id;
+        input.checked = selected.indexOf(device.device_id) !== -1;
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(deviceTitle(device)));
+        box.appendChild(label);
+      });
+      return box;
+    }
+
+    function checkedIds(box) {
+      var ids = [];
+      var inputs = box.querySelectorAll("input[type=checkbox]");
+      for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].checked) ids.push(inputs[i].value);
+      }
+      return ids;
+    }
+
+    function renderCreateDevices() {
+      var box = document.getElementById("create-devices");
+      var selected = checkedIds(box);
+      box.innerHTML = "";
+      var choices = deviceChecks(selected);
+      while (choices.firstChild) box.appendChild(choices.firstChild);
+    }
+
+    function toLocalInput(stamp) {
+      if (!stamp) return "";
+      var date = new Date(stamp * 1000);
+      function pad(n) { return (n < 10 ? "0" : "") + n; }
+      return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+        "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+    }
+
+    function fromLocalInput(value) {
+      if (!value) return null;
+      var ms = new Date(value).getTime();
+      if (isNaN(ms)) return null;
+      return Math.floor(ms / 1000);
+    }
+
+    function accessText(person) {
+      if (!person.enabled) return "Off";
+      if (person.expired) return "Expired";
+      if (person.expires_at) return "Until " + new Date(person.expires_at * 1000).toLocaleString();
+      return "No end date";
+    }
+
+    function renderPeople(users) {
+      var box = document.getElementById("people");
+      var active = document.activeElement;
+      if (box.contains(active) && active.tagName !== "BUTTON") return;
+      box.innerHTML = "";
+      users.forEach(function(person) {
+        var card = document.createElement("form");
+        card.className = "card";
+        var head = document.createElement("div");
+        head.className = "person-head";
+        var name = document.createElement("strong");
+        name.textContent = person.username;
+        var role = document.createElement("span");
+        role.className = "sub";
+        role.textContent = (person.role === "admin" ? "Admin" : "User") + " · " + accessText(person);
+        head.appendChild(name);
+        head.appendChild(role);
+        card.appendChild(head);
+
+        var enabledLabel = document.createElement("label");
+        var enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.checked = !!person.enabled;
+        enabledLabel.appendChild(enabled);
+        enabledLabel.appendChild(document.createTextNode(" Account enabled"));
+        card.appendChild(enabledLabel);
+
+        var untilLabel = document.createElement("label");
+        untilLabel.textContent = "Access ends";
+        var until = document.createElement("input");
+        until.type = "datetime-local";
+        until.value = toLocalInput(person.expires_at);
+        card.appendChild(untilLabel);
+        card.appendChild(until);
+        var untilHint = document.createElement("p");
+        untilHint.className = "sub";
+        untilHint.textContent = "Leave this empty for no end date.";
+        card.appendChild(untilHint);
+
+        var checks = null;
+        if (person.role !== "admin") {
+          var caption = document.createElement("label");
+          caption.textContent = "Cameras";
+          card.appendChild(caption);
+          checks = deviceChecks(person.devices || []);
+          card.appendChild(checks);
+        }
+        var save = document.createElement("button");
+        save.type = "submit";
+        save.textContent = "Save";
+        card.appendChild(save);
+
+        var passLabel = document.createElement("label");
+        passLabel.textContent = "New password";
+        var passRow = document.createElement("div");
+        passRow.className = "pass-row";
+        var pass = document.createElement("input");
+        pass.type = "password";
+        pass.autocomplete = "new-password";
+        pass.placeholder = "At least 6 characters";
+        var setPass = document.createElement("button");
+        setPass.className = "ghost";
+        setPass.type = "button";
+        setPass.textContent = "Set password";
+        pass.onkeydown = function(event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            setPass.click();
+          }
+        };
+        passRow.appendChild(pass);
+        passRow.appendChild(setPass);
+        card.appendChild(passLabel);
+        card.appendChild(passRow);
+
+        card.onsubmit = function(event) {
+          event.preventDefault();
+          var jobs = [
+            fetch("/api/account", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({
+                username: person.username,
+                enabled: enabled.checked,
+                expires_at: fromLocalInput(until.value)
+              })
+            })
+          ];
+          if (checks) {
+            jobs.push(fetch("/api/assign", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({username: person.username, devices: checkedIds(checks)})
+            }));
+          }
+          Promise.all(jobs).then(function(responses) {
+            var failed = null;
+            for (var i = 0; i < responses.length; i++) {
+              if (!responses[i].ok) failed = responses[i];
+            }
+            if (!failed) {
+              document.getElementById("admin-msg").textContent = "Saved " + person.username + ".";
+              loadPeople();
+              return;
+            }
+            failed.text().then(function(text) {
+              document.getElementById("admin-msg").textContent = text || "That was not saved.";
+            });
+          });
+        };
+        setPass.onclick = function() {
+          fetch("/api/password", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({username: person.username, new: pass.value})
+          }).then(function(r) {
+            say("admin-msg", r, "Password set for " + person.username + ".");
+            if (r.ok) pass.value = "";
+          });
+        };
+        box.appendChild(card);
+      });
+    }
+
+    function loadPeople() {
+      fetch("/api/users").then(function(r) { return r.json(); }).then(function(body) {
+        renderPeople(body.users || []);
+      });
+    }
+
+    document.getElementById("create-user").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/users", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          username: form.username.value,
+          password: form.password.value,
+          role: form.role.value,
+          devices: form.role.value === "user" ? checkedIds(document.getElementById("create-devices")) : []
+        })
+      }).then(function(r) {
+        say("admin-msg", r, "Account created.");
+        if (r.ok) {
+          form.reset();
+          show("create-devices-wrap", true);
+          renderCreateDevices();
+          loadPeople();
+        }
+      });
+    };
+
+    document.getElementById("create-role").onchange = function() {
+      show("create-devices-wrap", this.value !== "admin");
+    };
+
+    requireSession(true).then(function(user) {
+      if (!user) return;
+      fetch("/api/devices").then(function(r) { return r.json(); }).then(function(body) {
+        knownDevices = body.devices || [];
+        renderCreateDevices();
+        loadPeople();
+      });
+    });
+  </script>
+</body>
+</html>

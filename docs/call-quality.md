@@ -18,7 +18,7 @@ After that change, a real call was: video acceptable both ways, audio to the dev
 
 These are recorded so the next edit does not repeat them.
 
-**SDP `b=AS` on the device offer.** Inserting a bandwidth line into the device's local description was accepted by Chromium 69 (an earlier, more aggressive edit that stripped codecs was not: `setLocalDescription` failed with "Invalid SDP line" and the call hung up). With only `b=AS`, ICE still completed and the computer-to-device direction looked excellent, but the device sent no usable audio or video. The computer showed a black video box and no sound. The bandwidth line is gone. The unused `tuneSdp` function is still in the HTML and must not be wired back in.
+**SDP `b=AS` on the device offer.** Inserting a bandwidth line into the device's local description was accepted by Chromium 69 (an earlier, more aggressive edit that stripped codecs was not: `setLocalDescription` failed with "Invalid SDP line" and the call hung up). With only `b=AS`, ICE still completed and the computer-to-device direction still played, and the device stopped sending its own audio and video. Do not add that bandwidth line, or a function that inserts it, back into the call page.
 
 **`jitterBufferTarget = 0` and `playoutDelayHint = 0` on the computer.** Those were added to cut delay. Current Chrome then played nothing from the device, while Chromium 69 kept playing the computer's media. Removing the properties was not enough by itself, because the `b=AS` offer was still in place. Both are gone now.
 
@@ -26,7 +26,7 @@ These are recorded so the next edit does not repeat them.
 
 ## If the device picture disappears again
 
-1. Refresh the computer page so it is not running an old `user.html`.
+1. Refresh the Calls page so it is not running an old script.
 2. Reload the kiosk with `tools/reload_kiosk.py` so it is not running an old `device.html`.
 3. Place a call and read `device log` lines.
    - No camera track, or `readyState` not `live`: the capture constraints are wrong for this sensor.

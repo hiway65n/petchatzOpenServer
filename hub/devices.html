@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Devices · PetChatz</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <nav class="nav">
+      <a href="/calls">Calls</a>
+      <a href="/users">People</a>
+      <a class="here" href="/devices">Devices</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <h2>Outside the house</h2>
+    <form id="public-host" class="card">
+      <label for="public-host-input">External address</label>
+      <input id="public-host-input" name="public_host" placeholder="petchatz.example.net" autocomplete="off">
+      <button class="ghost" type="submit">Save external address</button>
+      <p class="sub">People away from home open https:// and this name. The proxy handles that page. The device keeps using the address inside the house.</p>
+    </form>
+    <h2>Cameras</h2>
+    <p class="sub">The name is what people see. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards. Removing a camera clears its name, settings, and who can call it. A camera that is still powered on comes back with those defaults.</p>
+    <div id="cameras"></div>
+    <p id="admin-msg"></p>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    function checkField(labelText, name, checked) {
+      var label = document.createElement("label");
+      var input = document.createElement("input");
+      input.type = "checkbox";
+      input.name = name;
+      input.checked = !!checked;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(" " + labelText));
+      return label;
+    }
+
+    function field(labelText, name, value) {
+      var wrap = document.createElement("div");
+      var label = document.createElement("label");
+      label.textContent = labelText;
+      var input = document.createElement("input");
+      input.name = name;
+      input.value = value;
+      wrap.appendChild(label);
+      wrap.appendChild(input);
+      return wrap;
+    }
+
+    function renderCameras(list, force) {
+      var box = document.getElementById("cameras");
+      if (!force && box.contains(document.activeElement)) return;
+      box.innerHTML = "";
+      if (!list.length) {
+        box.textContent = "No cameras have connected yet.";
+        return;
+      }
+      list.forEach(function(device) {
+        var form = document.createElement("form");
+        form.className = "card";
+        var fields = document.createElement("div");
+        fields.className = "cam-fields";
+        fields.appendChild(field("Name", "nickname", device.nickname || ""));
+        fields.appendChild(field("Width", "width", device.width || 320));
+        fields.appendChild(field("Height", "height", device.height || 240));
+        fields.appendChild(field("Frames per second", "frame_rate", device.frame_rate || 12));
+        var button = document.createElement("button");
+        button.className = "ghost";
+        button.type = "submit";
+        button.textContent = "Save";
+        fields.appendChild(button);
+        form.appendChild(fields);
+        var checks = document.createElement("div");
+        checks.className = "row";
+        checks.appendChild(checkField("Echo cancellation", "echo_cancel", device.echo_cancel !== false));
+        checks.appendChild(checkField("Noise suppression", "noise_suppression", device.noise_suppression !== false));
+        form.appendChild(checks);
+        var idLine = document.createElement("p");
+        idLine.className = "sub";
+        idLine.textContent = device.device_id + (device.online ? " · online" : " · offline");
+        form.appendChild(idLine);
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "warn";
+        remove.textContent = "Remove";
+        form.appendChild(remove);
+        form.onsubmit = function(event) {
+          event.preventDefault();
+          fetch("/api/device", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              device_id: device.device_id,
+              nickname: form.nickname.value,
+              width: form.width.value,
+              height: form.height.value,
+              frame_rate: form.frame_rate.value,
+              echo_cancel: form.echo_cancel.checked,
+              noise_suppression: form.noise_suppression.checked
+            })
+          }).then(function(r) {
+            say("admin-msg", r, "Saved " + (form.nickname.value || device.device_id) + ".");
+            if (r.ok) loadCameras(true);
+          });
+        };
+        remove.onclick = function() {
+          var name = device.nickname || device.device_id;
+          if (!window.confirm("Remove " + name + "? People lose access, and its saved settings are cleared.")) return;
+          fetch("/api/device/remove", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({device_id: device.device_id})
+          }).then(function(r) {
+            if (!r.ok) {
+              say("admin-msg", r, "");
+              return;
+            }
+            return r.json().then(function(body) {
+              document.getElementById("admin-msg").textContent = body.still_online
+                ? name + " is still powered on, so it stays in the list with default settings."
+                : "Removed " + name + ".";
+              loadCameras(true);
+            });
+          });
+        };
+        box.appendChild(form);
+      });
+    }
+
+    function loadCameras(force) {
+      fetch("/api/devices").then(function(r) { return r.json(); }).then(function(body) {
+        renderCameras(body.devices || [], force);
+      });
+    }
+
+    document.getElementById("public-host").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({public_host: form.public_host.value})
+      }).then(function(r) {
+        document.getElementById("admin-msg").textContent = r.ok
+          ? "External address saved. Refresh an outside browser before the next call."
+          : "External address was not saved.";
+      });
+    };
+
+    requireSession(true).then(function(user) {
+      if (!user) return;
+      fetch("/api/settings").then(function(r) { return r.json(); }).then(function(body) {
+        document.getElementById("public-host-input").value = body.public_host || "";
+      });
+      loadCameras();
+    });
+  </script>
+</body>
+</html>

@@ -24,7 +24,9 @@ if [[ ! -f "$DEST/config.json" ]]; then
   exit 1
 fi
 
-install -m 644 "$ROOT/hub/server.py" "$ROOT/hub/device.html" "$ROOT/hub/user.html" "$DEST/"
+install -m 644 "$ROOT/hub/server.py" "$ROOT/hub/device.html" \
+  "$ROOT/hub/login.html" "$ROOT/hub/calls.html" "$ROOT/hub/users.html" \
+  "$ROOT/hub/devices.html" "$ROOT/hub/app.css" "$ROOT/hub/common.js" "$DEST/"
 install -m 755 "$ROOT/deploy/refresh-public-ip.sh" "$DEST/refresh-public-ip.sh"
 
 PUBLIC_IP="$(curl -4 -fsS --max-time 10 https://api.ipify.org)"

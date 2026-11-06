@@ -1,21 +1,21 @@
 # Using the hub
 
-Open `https://<hub-ip>/` and accept the certificate warning.
+Open `https://<hub-ip>/` and accept the certificate warning. That is the sign-in page. After sign-in the browser goes to Calls.
 
-## Accounts
+## Pages
 
-The installer creates one admin. An admin sees every camera that has connected and can call any of them. From the People section an admin creates accounts, sets a new password for any account, and checks which cameras a user may call. A user can have more than one camera. Clearing every camera and saving removes that person's access. An admin account is not limited by those checkboxes.
+- **Calls** lists the cameras this login may use. An admin sees every camera. A user sees only the cameras checked for that account. On a phone, an active call fills the screen, with the camera's picture, a small preview of your own camera, and Hang up along the bottom. On a computer the picture stays at the camera's own pixel size.
+- **People** is for an admin. Create an account, choose its cameras, turn it on or off, and set a time when access ends. An empty end time means the account does not expire. Turning an account off, or an end time that has passed, signs that person out. The account you are using cannot be turned off, and at least one admin must stay able to sign in. Anyone can change their own password from Calls. An admin can set a new password for someone else from People, which signs that person out.
+- **Devices** is for an admin. Name each camera and set its picture size, frame rate, echo cancellation, and noise suppression. The device uses those values the next time it starts a call. Echo cancellation and noise suppression can be turned off separately. Both start on. Turning echo cancellation off can let the speaker feed back into the microphone. 320 by 240 at 12 frames per second is the starting point these single-core boards can sustain. Remove clears the saved name, settings, and who can call that camera. A camera that is still powered on comes back with the defaults.
 
-Passwords need at least 6 characters. Anyone signed in can change their own password from the page, and that form asks for the current password. When an admin sets someone else's password, that person is signed out and must use the new one. The picture in a call is shown at the camera's own pixel size, and it shrinks to fit a phone screen.
+Passwords need at least 6 characters. Sessions are cookie tokens stored in `hub.db`. Signing out deletes the cookie on the hub.
 
-An admin names each camera and sets its picture size, frame rate, echo cancellation, and noise suppression from the Cameras section. The device uses those values the next time it starts a call. Echo cancellation and noise suppression can be turned off separately when testing the microphone. Both start on. Turning echo cancellation off can let the speaker feed back into the microphone, because they sit next to each other. 320 by 240 at 12 frames per second is the starting point that these single-core boards can sustain. A higher frame rate is smoother until the device falls behind. The name is what people see on the call list. The device id stays on the card so it can still be assigned to an account.
-
-Sessions are cookie tokens stored in `hub.db`. Signing out deletes the cookie on the hub.
+The external address, for people outside the house, is saved on the Devices page.
 
 ## A call
 
 1. The device must show as online. If it does not, the hub is down, the device JavaScript still points at the old cloud, or the kiosk has not reloaded since that change. See [device.md](device.md).
-2. Press Call on that device. Stay on the page. The remote picture is a muted video element, and the device's microphone is a separate audio element, so the browser can start playback from the click.
+2. Press Call on that camera. On a phone, stay in the full-screen call. On a computer, stay on the page. The remote picture is a muted video element, and the device's microphone is a separate audio element, so the browser can start playback from the click.
 3. The status line moves through the ICE state (`checking`, `connected`, `completed`) and also reports when a remote audio or video track arrives.
 4. Hang up from the page. Closing the tab also ends the call.
 

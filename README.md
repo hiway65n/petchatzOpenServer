@@ -28,8 +28,11 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | Path | Role |
 | --- | --- |
 | `hub/server.py` | HTTPS signaling hub, login, and roles |
+| `hub/login.html` | Sign-in page |
+| `hub/calls.html` | Call page for a person |
+| `hub/users.html` | Accounts, access, and expiration |
+| `hub/devices.html` | Camera settings and removal |
 | `hub/device.html` | Page the device kiosk loads during a call |
-| `hub/user.html` | Page a person uses in a normal browser |
 | `hub/petchatz-hub.service` | systemd unit |
 | `hub/config.example.json` | Shape of the config file created at install |
 | `deploy/setup.sh` | First-time install on Ubuntu |

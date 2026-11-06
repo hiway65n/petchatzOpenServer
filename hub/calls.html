@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calls · PetChatz</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <nav class="nav">
+      <a class="here" href="/calls">Calls</a>
+      <a class="admin-only hidden" href="/users">People</a>
+      <a class="admin-only hidden" href="/devices">Devices</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <p class="sub" id="subtitle">Choose a camera.</p>
+    <p id="call-error" class="error"></p>
+    <div id="stage" class="card hidden">
+      <video id="remote" autoplay playsinline muted></video>
+      <video id="local-preview" class="hidden" autoplay playsinline muted></video>
+      <audio id="remote-audio" autoplay></audio>
+      <div id="call-bar">
+        <p id="call-who"></p>
+        <p id="call-state"></p>
+        <button id="hangup" class="warn" type="button">Hang up</button>
+      </div>
+    </div>
+    <div id="devices"></div>
+    <form id="own-pass" class="card">
+      <h2>Password</h2>
+      <label>Current password</label>
+      <input name="old" type="password" autocomplete="current-password" required>
+      <label>New password</label>
+      <input name="new" type="password" autocomplete="new-password" required>
+      <button class="ghost" type="submit">Change my password</button>
+      <p id="pass-msg"></p>
+    </form>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    var ws = null;
+    var pc = null;
+    var localStream = null;
+    var callId = null;
+    var iceServers = [];
+    var pendingIce = [];
+    var knownDevices = [];
+    var remoteEl = document.getElementById("remote");
+    var localEl = document.getElementById("local-preview");
+
+    function capOutgoingVideo() {
+      if (!pc || !pc.getSenders) return Promise.resolve();
+      var tasks = [];
+      pc.getSenders().forEach(function(sender) {
+        if (!sender.track || sender.track.kind !== "video" || !sender.getParameters || !sender.setParameters) return;
+        var params = sender.getParameters();
+        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 200000;
+        params.encodings[0].maxFramerate = 12;
+        tasks.push(sender.setParameters(params).catch(function() {}));
+      });
+      return Promise.all(tasks);
+    }
+
+    function fitRemote(width, height) {
+      var w = width > 0 ? width : 320;
+      var h = height > 0 ? height : 240;
+      remoteEl.style.setProperty("--frame-w", w + "px");
+      remoteEl.style.setProperty("--frame-ratio", w + " / " + h);
+    }
+
+    function send(obj) {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    }
+
+    function setInCall(on) {
+      document.body.classList.toggle("in-call", !!on);
+    }
+
+    function stopCall() {
+      if (pc) { pc.close(); pc = null; }
+      if (localStream) {
+        localStream.getTracks().forEach(function(track) { track.stop(); });
+        localStream = null;
+      }
+      remoteEl.srcObject = null;
+      localEl.srcObject = null;
+      show("local-preview", false);
+      pendingIce = [];
+      callId = null;
+      show("stage", false);
+      setInCall(false);
+    }
+
+    function renderDevices(list) {
+      var box = document.getElementById("devices");
+      box.innerHTML = "";
+      if (!list.length) {
+        box.innerHTML = "<div class='card'>No cameras are assigned to this login yet.</div>";
+        return;
+      }
+      list.forEach(function(device) {
+        var card = document.createElement("div");
+        card.className = "card device";
+        var label = document.createElement("div");
+        var title = document.createElement("strong");
+        title.textContent = device.nickname || device.device_id;
+        var detail = document.createElement("div");
+        detail.className = "sub";
+        var bits = [device.online ? "Online" : "Offline"];
+        if (device.nickname) bits.push(device.device_id);
+        if (device.version) bits.push(device.version);
+        if (device.width) bits.push(device.width + "x" + device.height + " @" + device.frame_rate);
+        if (device.in_call) bits.push("in a call");
+        detail.textContent = bits.join(" · ");
+        var dot = document.createElement("span");
+        dot.className = "dot " + (device.online ? "on" : "off");
+        label.appendChild(dot);
+        label.appendChild(title);
+        label.appendChild(document.createElement("br"));
+        label.appendChild(detail);
+        var button = document.createElement("button");
+        button.textContent = "Call";
+        button.disabled = !device.online || device.in_call;
+        button.onclick = function() {
+          remoteEl.muted = true;
+          remoteEl.setAttribute("playsinline", "");
+          remoteEl.play().catch(function() {});
+          document.getElementById("remote-audio").play().catch(function() {});
+          document.getElementById("call-who").textContent = device.nickname || device.device_id;
+          document.getElementById("call-state").textContent = "Starting";
+          show("stage", true);
+          setInCall(true);
+          placeCall(device, button);
+        };
+        card.appendChild(label);
+        card.appendChild(button);
+        box.appendChild(card);
+      });
+    }
+
+    function placeCall(device, button) {
+      document.getElementById("call-error").textContent = "";
+      fitRemote(device.width, device.height);
+      button.disabled = true;
+      var media = navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1},
+        video: {width: {ideal: 320}, height: {ideal: 240}, frameRate: {ideal: 12}, facingMode: "user"}
+      }).catch(function() {
+        return navigator.mediaDevices.getUserMedia({audio: true, video: false});
+      }).catch(function() { return null; });
+      media.then(function(stream) {
+        localStream = stream;
+        if (stream && stream.getVideoTracks().length) {
+          localEl.srcObject = stream;
+          show("local-preview", true);
+          var previewPlay = localEl.play();
+          if (previewPlay && previewPlay.catch) previewPlay.catch(function() {});
+        }
+        send({type: "call", device_id: device.device_id});
+      }).catch(function(err) {
+        document.getElementById("call-error").textContent = String(err);
+        button.disabled = false;
+        stopCall();
+      });
+    }
+
+    function acceptOffer(data) {
+      callId = data.call_id;
+      show("stage", true);
+      setInCall(true);
+      document.getElementById("call-state").textContent = "Connecting";
+      pc = new RTCPeerConnection({sdpSemantics: "unified-plan", iceServers: iceServers});
+      if (localStream) {
+        localStream.getTracks().forEach(function(track) { pc.addTrack(track, localStream); });
+      }
+      pc.ontrack = function(event) {
+        var stream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+        if (event.track.kind === "audio") {
+          var audio = document.getElementById("remote-audio");
+          audio.srcObject = stream;
+          var audioPlay = audio.play();
+          if (audioPlay && audioPlay.catch) audioPlay.catch(function() {});
+        } else {
+          remoteEl.srcObject = stream;
+          remoteEl.muted = true;
+          remoteEl.onloadedmetadata = function() {
+            if (remoteEl.videoWidth > 0) fitRemote(remoteEl.videoWidth, remoteEl.videoHeight);
+          };
+          var videoPlay = remoteEl.play();
+          if (videoPlay && videoPlay.catch) videoPlay.catch(function() {});
+        }
+        document.getElementById("call-state").textContent = "Receiving " + event.track.kind;
+      };
+      pc.onicecandidate = function(event) {
+        if (!event.candidate) return;
+        send({
+          type: "ice",
+          call_id: callId,
+          candidate: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex
+          }
+        });
+      };
+      pc.oniceconnectionstatechange = function() {
+        document.getElementById("call-state").textContent = pc.iceConnectionState;
+      };
+      pc.setRemoteDescription({type: "offer", sdp: data.sdp}).then(function() {
+        pendingIce.forEach(function(candidate) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(function() {});
+        });
+        pendingIce = [];
+        return pc.createAnswer();
+      }).then(function(answer) {
+        return pc.setLocalDescription(answer);
+      }).then(function() {
+        return capOutgoingVideo();
+      }).then(function() {
+        send({type: "answer", call_id: callId, sdp: pc.localDescription.sdp});
+      }).catch(function(err) {
+        document.getElementById("call-error").textContent = String(err);
+      });
+    }
+
+    function connectSocket() {
+      ws = new WebSocket("wss://" + location.host + "/signal?role=user&via=" + encodeURIComponent(location.hostname));
+      ws.onmessage = function(event) {
+        var data = JSON.parse(event.data);
+        if (data.type === "devices") {
+          if (data.iceServers) iceServers = data.iceServers;
+          knownDevices = data.devices || [];
+          renderDevices(knownDevices);
+        } else if (data.type === "ringing") {
+          callId = data.call_id;
+          show("stage", true);
+          setInCall(true);
+          document.getElementById("call-state").textContent = "Ringing the camera";
+        } else if (data.type === "offer") acceptOffer(data);
+        else if (data.type === "ice" && data.call_id === callId) {
+          if (!pc || !pc.remoteDescription) pendingIce.push(data.candidate);
+          else pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function() {});
+        } else if (data.type === "state" && data.call_id === callId) {
+          document.getElementById("call-state").textContent = data.state + (data.detail ? " " + data.detail : "");
+        } else if (data.type === "hangup") {
+          stopCall();
+        } else if (data.type === "error") {
+          document.getElementById("call-error").textContent = data.message;
+          stopCall();
+        }
+      };
+      ws.onclose = function() { setTimeout(connectSocket, 2000); };
+    }
+
+    document.getElementById("hangup").onclick = function() {
+      if (callId) send({type: "hangup", call_id: callId});
+      stopCall();
+    };
+
+    document.getElementById("own-pass").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      fetch("/api/password", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({old: form.old.value, new: form.new.value})
+      }).then(function(r) {
+        say("pass-msg", r, "Password changed.");
+        if (r.ok) form.reset();
+      });
+    };
+
+    requireSession(false).then(function(user) {
+      if (!user) return;
+      document.getElementById("subtitle").textContent = user.role === "admin"
+        ? "You can call any camera that is online."
+        : "You can call the cameras assigned to this login.";
+      fetch("/ice.json?via=" + encodeURIComponent(location.hostname)).then(function(r) { return r.json(); }).then(function(ice) {
+        iceServers = ice.iceServers || iceServers;
+      }).catch(function() {});
+      connectSocket();
+    });
+  </script>
+</body>
+</html>

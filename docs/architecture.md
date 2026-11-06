@@ -2,7 +2,7 @@
 
 ```
 desktop browser                         hub (Ubuntu)                         device kiosk
-user.html                               server.py :443                       device.html
+calls.html                              server.py :443                       device.html
     |  POST /login, cookie                  |                                    |
     |  wss /signal?role=user                |  wss /signal?role=device           |
     | <-------- offer / answer / ice -----> | <-------- offer / answer / ice --> |
