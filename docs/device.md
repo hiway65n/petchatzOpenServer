@@ -1,6 +1,6 @@
 # Set up the device
 
-Do these steps in order. Install the watchdog drop-in before changing the server name. If the call page loads while the stock unit is still in place, the board reboots about every four minutes.
+Do these steps in order, or use **Deploy to this camera** on the hub's Devices page. That button does steps 2 through 4 when the camera still accepts SSH as root with an empty password. Install the watchdog drop-in before changing the server name. If the call page loads while the stock unit is still in place, the board reboots about every four minutes.
 
 The device already has the camera, microphone, and a Chromium 69 kiosk. This setup does not replace that software. It tells the kiosk to load the call page from your hub, and it stops the local service from rebooting the board when that page is on screen.
 
@@ -108,7 +108,7 @@ The device id is the `device_id` query on the call page, and the id in that hub 
 
 `petchatz-ws` still has to receive `/ping` about every 5 seconds once the call page is up. The page in this repo does that. If you replace `hub/device.html` and drop that socket, the service will be restarted every 20 seconds. The board will stay up, and the kiosk's local commands will flap.
 
-Treats, scent, and the other local commands still go to `wss://localhost` as plain-text paths such as `/device/get_id` and `/settings/get_treat_count`. The hub does not send those yet.
+Treats are sent from the call page on the device. When Devices has Treat dispenser on for that camera, the hub asks the page to send `/dispense/treat` on `wss://localhost`. Scent is still not sent.
 
 ## Leave these alone
 

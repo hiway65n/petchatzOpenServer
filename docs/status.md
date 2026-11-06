@@ -9,6 +9,8 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - The device finds the hub, comes online, and stays registered.
 - Sign-in, separate Calls, People, and Devices pages, and choosing which cameras each user can call.
 - Accounts can be turned off or given an end time.
+- An admin can send the watchdog change and the hub address to a camera from Devices.
+- Treats can be turned on for one camera. They stay off until then.
 - A two-way audio and video call between a desktop browser and the device kiosk.
 - Two different units on one hub, each with its own name, picture size, frame rate, and microphone processing.
 - A local TURN server so the two browsers can exchange media when a direct path is awkward.
@@ -20,7 +22,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 
 ## Not done
 
-- Treats and scent. The device still has those local commands. The hub does not send them. A later step is a control on the call screen.
+- Scent. The device still has that local command. The hub does not send it.
 - A still picture on the device screen while nobody is in a call. A looping video is a lower priority than the still picture.
 - A one-time password that is generated for an account and expires after a chosen time.
 - A diagnostics page that shows one device's recent log lines.

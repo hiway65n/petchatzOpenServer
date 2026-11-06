@@ -23,6 +23,13 @@
       <button class="ghost" type="submit">Save external address</button>
       <p class="sub">People away from home open https:// and this name. The proxy handles that page. The device keeps using the address inside the house.</p>
     </form>
+    <h2>Set up a camera</h2>
+    <form id="deploy-device" class="card">
+      <label for="deploy-ip">Camera address</label>
+      <input id="deploy-ip" name="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off" required>
+      <button type="submit">Deploy to this camera</button>
+      <p class="sub">One press installs the watchdog change, points the camera at this hub, and reloads its screen. The camera must be on the home network and still use the empty root password it shipped with. A camera that is already set up is left running.</p>
+    </form>
     <h2>Cameras</h2>
     <p class="sub">The name is what people see. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards. Removing a camera clears its name, settings, and who can call it. A camera that is still powered on comes back with those defaults.</p>
     <div id="cameras"></div>
@@ -80,6 +87,7 @@
         checks.className = "row";
         checks.appendChild(checkField("Echo cancellation", "echo_cancel", device.echo_cancel !== false));
         checks.appendChild(checkField("Noise suppression", "noise_suppression", device.noise_suppression !== false));
+        checks.appendChild(checkField("Treat dispenser", "treats", device.treats === true));
         form.appendChild(checks);
         var idLine = document.createElement("p");
         idLine.className = "sub";
@@ -90,6 +98,24 @@
         remove.className = "warn";
         remove.textContent = "Remove";
         form.appendChild(remove);
+        if (device.treats) {
+          var treat = document.createElement("button");
+          treat.type = "button";
+          treat.className = "ghost";
+          treat.textContent = "Dispense treat";
+          treat.onclick = function() {
+            treat.disabled = true;
+            fetch("/api/treat", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({device_id: device.device_id})
+            }).then(function(r) {
+              say("admin-msg", r, "Treat sent to " + (device.nickname || device.device_id) + ".");
+              setTimeout(function() { treat.disabled = false; }, 4000);
+            });
+          };
+          form.appendChild(treat);
+        }
         form.onsubmit = function(event) {
           event.preventDefault();
           fetch("/api/device", {
@@ -102,7 +128,8 @@
               height: form.height.value,
               frame_rate: form.frame_rate.value,
               echo_cancel: form.echo_cancel.checked,
-              noise_suppression: form.noise_suppression.checked
+              noise_suppression: form.noise_suppression.checked,
+              treats: form.treats.checked
             })
           }).then(function(r) {
             say("admin-msg", r, "Saved " + (form.nickname.value || device.device_id) + ".");
@@ -138,6 +165,33 @@
         renderCameras(body.devices || [], force);
       });
     }
+
+    document.getElementById("deploy-device").onsubmit = function(event) {
+      event.preventDefault();
+      var form = event.target;
+      var button = form.querySelector("button");
+      button.disabled = true;
+      document.getElementById("admin-msg").textContent = "Deploying. This can take a minute.";
+      fetch("/api/device/deploy", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ip: form.ip.value})
+      }).then(function(r) {
+        button.disabled = false;
+        if (!r.ok) {
+          say("admin-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          document.getElementById("admin-msg").textContent = body.detail || "Camera updated.";
+          form.reset();
+          loadCameras(true);
+        });
+      }).catch(function() {
+        button.disabled = false;
+        document.getElementById("admin-msg").textContent = "Deploy did not finish.";
+      });
+    };
 
     document.getElementById("public-host").onsubmit = function(event) {
       event.preventDefault();

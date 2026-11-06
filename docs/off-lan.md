@@ -20,7 +20,7 @@ device on the LAN     -------------------------------- stays on the LAN --> :443
 
 Use Zoraxy for the page and the call socket only. Leave the TURN ports on a router forward straight to the hub. Zoraxy is an HTTP proxy, and the audio and video relay is UDP.
 
-On the hub, the external address is `public_host` in `/opt/petchatz-hub/config.json`. An admin can change it under Outside the house on the call page. These docs use `petchatz.example.net` for that name. Inside the house, keep opening `https://<lan-ip>/`. Away from home, open `https://petchatz.example.net/`.
+On the hub, the external address is `public_host` in `/opt/petchatz-hub/config.json`. An admin can change it under Outside the house on the Devices page. These docs use `petchatz.example.net` for that name. Inside the house, keep opening `https://<lan-ip>/`. Away from home, open `https://petchatz.example.net/`.
 
 Zoraxy proxy rule:
 
@@ -61,13 +61,13 @@ A self-signed certificate is generated for the LAN address and the current publi
    sudo ./deploy/enable-offlan.sh petchatz.example.net
    ```
 
-   An admin can change that name later under Outside the house on the call page. The device is not part of this step.
+   An admin can change that name later under Outside the house on the Devices page. The device is not part of this step.
 
 2. Point the DNS name at the house's public address, and create the Zoraxy rule in the section above. The upstream is the hub's LAN address. A 521 from Zoraxy means it cannot open that upstream. Pointing the rule at the public name loops out through the router and fails the same way. The TURN port forwards are a separate step and do not clear a 521.
 
 3. On the router, forward TURN to the hub and the web port to Zoraxy, as in the table above. Leave port 22 closed. The device's SSH login is not part of a call.
 
-4. Change the admin password from the People section on the call page before the web port is open. The hub login will be on the internet.
+4. Change the admin password from the People page before the web port is open. The hub login will be on the internet.
 
 5. From a phone on cellular, with Wi-Fi off, open `https://petchatz.example.net/`, sign in, and call. The device log should include an `ice relay` line. A LAN call should still use `https://<lan-ip>/`.
 

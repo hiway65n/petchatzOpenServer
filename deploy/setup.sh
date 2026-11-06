@@ -32,7 +32,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3-aiohttp coturn openssl
+apt-get install -y -qq python3-aiohttp coturn openssl sshpass openssh-client
 
 install -d -m 755 "$DEST"
 install -m 644 "$ROOT/hub/server.py" "$ROOT/hub/device.html" \

@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import ssl
+import subprocess
 import threading
 import time
 import uuid
@@ -26,6 +27,8 @@ db = None
 
 # device_id -> {ws, version, hw, call_id}
 devices = {}
+# device_id -> last treat request time
+treat_sent_at = {}
 # user_id -> set of websockets
 user_sockets = {}
 # call_id -> {device_id, user_id, user_ws}
@@ -89,7 +92,8 @@ def connect_db():
                 height INTEGER NOT NULL DEFAULT 240,
                 frame_rate INTEGER NOT NULL DEFAULT 12,
                 echo_cancel INTEGER NOT NULL DEFAULT 1,
-                noise_suppression INTEGER NOT NULL DEFAULT 1
+                noise_suppression INTEGER NOT NULL DEFAULT 1,
+                treats_enabled INTEGER NOT NULL DEFAULT 0
             );
             """
         )
@@ -98,6 +102,8 @@ def connect_db():
             db.execute("ALTER TABLE devices ADD COLUMN echo_cancel INTEGER NOT NULL DEFAULT 1")
         if "noise_suppression" not in columns:
             db.execute("ALTER TABLE devices ADD COLUMN noise_suppression INTEGER NOT NULL DEFAULT 1")
+        if "treats_enabled" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN treats_enabled INTEGER NOT NULL DEFAULT 0")
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "enabled" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
@@ -301,7 +307,7 @@ def request_audience(request):
 def device_profile(device_id):
     with db_lock:
         row = db.execute(
-            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression FROM devices WHERE device_id = ?",
+            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled FROM devices WHERE device_id = ?",
             (device_id,),
         ).fetchone()
     if row is None:
@@ -312,6 +318,7 @@ def device_profile(device_id):
             "frame_rate": 12,
             "echo_cancel": True,
             "noise_suppression": True,
+            "treats": False,
         }
     return {
         "nickname": row["nickname"] or "",
@@ -320,6 +327,7 @@ def device_profile(device_id):
         "frame_rate": row["frame_rate"],
         "echo_cancel": bool(row["echo_cancel"]),
         "noise_suppression": bool(row["noise_suppression"]),
+        "treats": bool(row["treats_enabled"]),
     }
 
 
@@ -349,6 +357,7 @@ def device_record(device_id, info=None):
         "frame_rate": profile["frame_rate"],
         "echo_cancel": profile["echo_cancel"],
         "noise_suppression": profile["noise_suppression"],
+        "treats": profile["treats"],
         "online": info.get("ws") is not None,
         "version": info.get("version") or "",
         "hw": info.get("hw") or "",
@@ -386,7 +395,8 @@ def clean_capture(body):
         raise ValueError("use a frame rate from 5 through 30")
     echo_cancel = clean_flag(body.get("echo_cancel"), "echo cancellation")
     noise_suppression = clean_flag(body.get("noise_suppression"), "noise suppression")
-    return nickname, width, height, frame_rate, echo_cancel, noise_suppression
+    treats = clean_flag(body.get("treats"), "treat dispenser")
+    return nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats
 
 
 def clean_flag(value, label):
@@ -510,11 +520,21 @@ async def calls_page(_request):
     return page("calls.html", "text/html")
 
 
-async def users_page(_request):
+async def users_page(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPFound("/")
+    if user["role"] != "admin":
+        raise web.HTTPFound("/calls")
     return page("users.html", "text/html")
 
 
-async def devices_page(_request):
+async def devices_page(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPFound("/")
+    if user["role"] != "admin":
+        raise web.HTTPFound("/calls")
     return page("devices.html", "text/html")
 
 
@@ -759,23 +779,24 @@ async def api_device_save(request):
     if not device_id:
         raise web.HTTPBadRequest(text="device_id is required")
     try:
-        nickname, width, height, frame_rate, echo_cancel, noise_suppression = clean_capture(body)
+        nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats = clean_capture(body)
     except ValueError as exc:
         raise web.HTTPBadRequest(text=str(exc))
     with db_lock:
         db.execute(
             """
             INSERT INTO devices (
-                device_id, nickname, width, height, frame_rate, echo_cancel, noise_suppression
+                device_id, nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(device_id) DO UPDATE SET
                 nickname = excluded.nickname,
                 width = excluded.width,
                 height = excluded.height,
                 frame_rate = excluded.frame_rate,
                 echo_cancel = excluded.echo_cancel,
-                noise_suppression = excluded.noise_suppression
+                noise_suppression = excluded.noise_suppression,
+                treats_enabled = excluded.treats_enabled
             """,
             (
                 device_id,
@@ -785,17 +806,19 @@ async def api_device_save(request):
                 frame_rate,
                 int(echo_cancel),
                 int(noise_suppression),
+                int(treats),
             ),
         )
         db.commit()
     log.info(
-        "camera %s set to %sx%s @ %s echo %s noise %s",
+        "camera %s set to %sx%s @ %s echo %s noise %s treats %s",
         device_id,
         width,
         height,
         frame_rate,
         echo_cancel,
         noise_suppression,
+        treats,
     )
     info = devices.get(device_id)
     if info is not None:
@@ -825,6 +848,218 @@ async def api_device_remove(request):
     log.info("device %s removed online %s", device_id, still_online)
     await push_devices()
     return web.json_response({"ok": True, "still_online": still_online})
+
+
+async def api_treat(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPUnauthorized()
+    body = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise web.HTTPBadRequest(text="device_id is required")
+    if not can_use_device(user, device_id):
+        raise web.HTTPForbidden(text="you cannot use that camera")
+    if not device_profile(device_id)["treats"]:
+        raise web.HTTPBadRequest(text="treats are turned off for this camera")
+    info = devices.get(device_id)
+    if info is None or info.get("ws") is None or info["ws"].closed:
+        raise web.HTTPBadRequest(text="that camera is offline")
+    now = time.time()
+    if now - treat_sent_at.get(device_id, 0) < 3:
+        raise web.HTTPBadRequest(text="wait a moment before another treat")
+    treat_sent_at[device_id] = now
+    await send_json(info.get("ws"), {"type": "treat"})
+    log.info("treat %s by %s", device_id, user["username"])
+    return web.json_response({"ok": True})
+
+
+DEVICE_SETUP = r"""
+import os, re, shutil, subprocess, sys, time
+hub = sys.argv[1]
+override_path = "/etc/systemd/system/petchatz-ws.service.d/override.conf"
+override = "[Service]\nWatchdogSec=20s\nFailureAction=none\nStartLimitAction=none\nTimeoutStopSec=10s\n"
+os.makedirs("/etc/systemd/system/petchatz-ws.service.d", exist_ok=True)
+current = ""
+if os.path.exists(override_path):
+    current = open(override_path, "r").read()
+wrote = current != override
+if wrote:
+    handle = open(override_path, "w")
+    handle.write(override)
+    handle.close()
+shown = subprocess.check_output(
+    ["systemctl", "show", "petchatz-ws.service", "-p", "FailureAction", "-p", "StartLimitAction"],
+    universal_newlines=True,
+)
+needs_apply = wrote or ("FailureAction=none" not in shown) or ("StartLimitAction=none" not in shown)
+if needs_apply:
+    subprocess.check_call(["systemctl", "daemon-reload"])
+    subprocess.call(["systemctl", "restart", "petchatz-ws.service"])
+    ready = False
+    for _ in range(20):
+        if subprocess.call(["systemctl", "is-active", "--quiet", "petchatz-ws.service"]) == 0:
+            ready = True
+            break
+        time.sleep(1)
+    if not ready:
+        sys.stderr.write("service did not return\n")
+        sys.exit(3)
+    print("watchdog updated")
+else:
+    print("watchdog already set")
+js_path = "/var/www/http/scripts/deviceSettingsMenu.js"
+js = open(js_path, "r").read()
+lines = js.splitlines(True)
+found = False
+rebuilt = []
+for line in lines:
+    if (not found) and line.lstrip().startswith("var petchatz_server"):
+        rebuilt.append('var petchatz_server = "%s";\n' % hub)
+        found = True
+    else:
+        rebuilt.append(line)
+if not found:
+    sys.stderr.write("server line missing\n")
+    sys.exit(2)
+updated = "".join(rebuilt)
+if updated != js:
+    backup = js_path + ".bak"
+    if not os.path.exists(backup):
+        shutil.copy(js_path, backup)
+    handle = open(js_path, "w")
+    handle.write(updated)
+    handle.close()
+    print("server updated")
+else:
+    print("server already set")
+if updated == js and not needs_apply:
+    print("screen left as it is")
+    sys.exit(0)
+import base64, json, socket, urllib.request
+try:
+    targets = json.loads(urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=5).read().decode())
+    page = None
+    for item in targets:
+        if item.get("type") == "page":
+            page = item
+            break
+    if page is None:
+        raise RuntimeError("no page")
+    path = page["webSocketDebuggerUrl"].split(":9222", 1)[1]
+    sock = socket.create_connection(("127.0.0.1", 9222), 5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = "GET %s HTTP/1.1\r\nHost: 127.0.0.1:9222\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, key)
+    sock.sendall(req.encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        buf += sock.recv(4096)
+    payload = json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": "location.reload(true)", "returnByValue": True}}).encode()
+    mask = os.urandom(4)
+    frame = bytearray([0x81, 0x80 | len(payload)])
+    frame.extend(mask)
+    frame.extend(bytearray(payload[i] ^ mask[i % 4] for i in range(len(payload))))
+    sock.sendall(frame)
+    sock.close()
+    print("screen reloaded")
+except Exception:
+    print("screen was not reloaded")
+"""
+
+
+def private_ipv4(value):
+    text = (value or "").strip()
+    parts = text.split(".")
+    if len(parts) != 4 or any(not part.isdigit() for part in parts):
+        raise ValueError("enter an IPv4 address on the home network")
+    nums = [int(part) for part in parts]
+    if any(num > 255 for num in nums):
+        raise ValueError("enter an IPv4 address on the home network")
+    private = (
+        nums[0] == 10
+        or (nums[0] == 192 and nums[1] == 168)
+        or (nums[0] == 172 and 16 <= nums[1] <= 31)
+    )
+    if not private:
+        raise ValueError("use the camera's address on the home network")
+    return ".".join(str(num) for num in nums)
+
+
+def deploy_failure(completed):
+    text = ((completed.stderr or "") + "\n" + (completed.stdout or "")).lower()
+    if "permission denied" in text or "authentication" in text:
+        return "that camera did not accept the empty root password"
+    if "timed out" in text or "no route" in text or "connection refused" in text or "connection closed" in text:
+        return "that camera did not answer. Check that it is on and the address is right."
+    if completed.returncode == 2:
+        return "the camera menu does not have a server line to change"
+    if completed.returncode == 3:
+        return "the camera service did not come back after the watchdog change"
+    return "the camera did not finish setup"
+
+
+def deploy_device(ip, hub_ip):
+    if not os.path.isfile("/usr/bin/sshpass") and not shutil_which("sshpass"):
+        raise ValueError("the hub does not have sshpass installed")
+    known = os.path.join(BASE, "known_hosts")
+    env = os.environ.copy()
+    env["SSHPASS"] = ""
+    completed = subprocess.run(
+        [
+            "sshpass", "-e", "ssh",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "ConnectTimeout=50",
+            "-o", "UserKnownHostsFile=%s" % known,
+            "root@%s" % ip,
+            "python3", "-", hub_ip,
+        ],
+        input=DEVICE_SETUP.replace("\r\n", "\n"),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        check=False,
+    )
+    if completed.returncode != 0:
+        log.warning("device deploy %s failed: %s", ip, (completed.stderr or "")[:400])
+        raise ValueError(deploy_failure(completed))
+    detail = " ".join(line.strip() for line in (completed.stdout or "").splitlines() if line.strip())
+    log.info("device deploy %s: %s", ip, detail)
+    return detail or "camera updated"
+
+
+def shutil_which(name):
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(folder, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return ""
+
+
+async def api_device_deploy(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    try:
+        ip = private_ipv4(body.get("ip"))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    hub_ip = (load_config().get("lan_ip") or "").strip()
+    try:
+        private_ipv4(hub_ip)
+    except ValueError:
+        raise web.HTTPBadRequest(text="the hub does not have a home-network address saved")
+    try:
+        detail = await asyncio.get_running_loop().run_in_executor(None, deploy_device, ip, hub_ip)
+    except subprocess.TimeoutExpired:
+        log.warning("device deploy %s timed out", ip)
+        raise web.HTTPGatewayTimeout(text="the camera did not finish within two minutes")
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    return web.json_response({"ok": True, "detail": detail})
 
 
 async def api_password(request):
@@ -1080,6 +1315,8 @@ def make_app():
             web.post("/api/password", api_password),
             web.post("/api/device", api_device_save),
             web.post("/api/device/remove", api_device_remove),
+            web.post("/api/device/deploy", api_device_deploy),
+            web.post("/api/treat", api_treat),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
             web.get("/signal", signal),

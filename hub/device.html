@@ -249,6 +249,13 @@
       } else if (data.type === "hangup" && data.call_id === callId) {
         stopMedia();
         setStatus("Ready");
+      } else if (data.type === "treat") {
+        if (localWs && localWs.readyState === 1) {
+          localWs.send("/dispense/treat");
+          log("treat dispense");
+        } else {
+          log("treat dispenser offline");
+        }
       }
     }
 
@@ -277,6 +284,10 @@
         localPing = null;
         log("local watchdog off");
         setTimeout(connectLocal, 2000);
+      };
+      localWs.onmessage = function(event) {
+        var text = String(event.data || "");
+        if (text.indexOf("treat") !== -1) log("local " + text);
       };
       localWs.onerror = function() {};
     }

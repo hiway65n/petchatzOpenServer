@@ -25,19 +25,11 @@
       <div id="call-bar">
         <p id="call-who"></p>
         <p id="call-state"></p>
+        <button id="treat" class="ghost hidden" type="button">Treat</button>
         <button id="hangup" class="warn" type="button">Hang up</button>
       </div>
     </div>
     <div id="devices"></div>
-    <form id="own-pass" class="card">
-      <h2>Password</h2>
-      <label>Current password</label>
-      <input name="old" type="password" autocomplete="current-password" required>
-      <label>New password</label>
-      <input name="new" type="password" autocomplete="new-password" required>
-      <button class="ghost" type="submit">Change my password</button>
-      <p id="pass-msg"></p>
-    </form>
   </main>
   <script src="/common.js"></script>
   <script>
@@ -48,6 +40,7 @@
     var iceServers = [];
     var pendingIce = [];
     var knownDevices = [];
+    var callDeviceId = "";
     var remoteEl = document.getElementById("remote");
     var localEl = document.getElementById("local-preview");
 
@@ -91,8 +84,44 @@
       show("local-preview", false);
       pendingIce = [];
       callId = null;
+      callDeviceId = "";
+      show("treat", false);
       show("stage", false);
       setInCall(false);
+    }
+
+    function deviceById(deviceId) {
+      for (var i = 0; i < knownDevices.length; i++) {
+        if (knownDevices[i].device_id === deviceId) return knownDevices[i];
+      }
+      return null;
+    }
+
+    function showTreatFor(deviceId) {
+      var device = deviceById(deviceId);
+      show("treat", !!(device && device.treats));
+    }
+
+    function dispense(deviceId, button) {
+      if (button) button.disabled = true;
+      fetch("/api/treat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({device_id: deviceId})
+      }).then(function(r) {
+        if (r.ok) {
+          document.getElementById("call-error").textContent = "";
+          if (document.body.classList.contains("in-call")) {
+            document.getElementById("call-state").textContent = "Treat sent";
+          }
+          if (button) setTimeout(function() { button.disabled = false; }, 4000);
+          return;
+        }
+        r.text().then(function(text) {
+          document.getElementById("call-error").textContent = text || "Treat was not sent.";
+          if (button) button.disabled = false;
+        });
+      });
     }
 
     function renderDevices(list) {
@@ -132,12 +161,21 @@
           document.getElementById("remote-audio").play().catch(function() {});
           document.getElementById("call-who").textContent = device.nickname || device.device_id;
           document.getElementById("call-state").textContent = "Starting";
+          callDeviceId = device.device_id;
+          showTreatFor(device.device_id);
           show("stage", true);
           setInCall(true);
           placeCall(device, button);
         };
         card.appendChild(label);
         card.appendChild(button);
+        if (device.treats) {
+          var treat = document.createElement("button");
+          treat.className = "ghost";
+          treat.textContent = "Treat";
+          treat.onclick = function() { dispense(device.device_id, treat); };
+          card.appendChild(treat);
+        }
         box.appendChild(card);
       });
     }
@@ -235,6 +273,7 @@
           if (data.iceServers) iceServers = data.iceServers;
           knownDevices = data.devices || [];
           renderDevices(knownDevices);
+          if (callDeviceId) showTreatFor(callDeviceId);
         } else if (data.type === "ringing") {
           callId = data.call_id;
           show("stage", true);
@@ -256,22 +295,13 @@
       ws.onclose = function() { setTimeout(connectSocket, 2000); };
     }
 
+    document.getElementById("treat").onclick = function() {
+      if (callDeviceId) dispense(callDeviceId, document.getElementById("treat"));
+    };
+
     document.getElementById("hangup").onclick = function() {
       if (callId) send({type: "hangup", call_id: callId});
       stopCall();
-    };
-
-    document.getElementById("own-pass").onsubmit = function(event) {
-      event.preventDefault();
-      var form = event.target;
-      fetch("/api/password", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({old: form.old.value, new: form.new.value})
-      }).then(function(r) {
-        say("pass-msg", r, "Password changed.");
-        if (r.ok) form.reset();
-      });
     };
 
     requireSession(false).then(function(user) {

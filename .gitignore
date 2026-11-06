@@ -13,3 +13,4 @@ public-cert.pem
 public-key.pem
 turn.conf
 *.log
+known_hosts

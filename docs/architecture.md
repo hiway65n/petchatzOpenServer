@@ -26,7 +26,9 @@ Text JSON on the web socket.
 
 | Type | Direction | Meaning |
 | --- | --- | --- |
-| `hello` | device to hub, then hub replies | Register `device_id`, `version`, `hw`. The reply carries the LAN ICE servers |
+| `hello` | device to hub, then hub replies | Register `device_id`, `version`, `hw`. The reply carries the LAN ICE servers and that camera's capture settings |
+| `capture` | hub to device | Updated picture size, frame rate, and microphone processing |
+| `treat` | hub to device | Dispense one treat. The device page sends `/dispense/treat` on `wss://localhost`. Ignored unless that camera has treats turned on |
 | `devices` | hub to user | Devices this account is allowed to see |
 | `call` | user to hub | Start a call to `device_id` |
 | `ring` | hub to device | Start the offer |
@@ -48,11 +50,16 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /ping.json` | Device boot probe. CORS `*` |
 | `GET /ice.json` | STUN and TURN server list |
 | `GET /petchatzDevice2.html` | Device call page |
-| `GET /` | Human call page |
+| `GET /` | Sign-in page |
+| `GET /calls` | Call page for a signed-in person |
+| `GET /users`, `GET /devices` | Admin pages. Anyone else is sent back to Calls |
 | `POST /login`, `POST /logout`, `GET /api/session` | Session cookie `sid` |
-| `GET /api/devices` | Devices for this session |
-| `GET /api/users`, `POST /api/users`, `POST /api/assign` | Admin |
-| `POST /api/password` | Signed-in user, with the current password |
+| `GET /api/devices` | Cameras for this session |
+| `GET /api/users`, `POST /api/users`, `POST /api/assign`, `POST /api/account` | Admin. Accounts, camera access, enabled flag, and expiration |
+| `POST /api/password` | Change your own password, with the current one. An admin can set another account's password without it |
+| `POST /api/device`, `POST /api/device/remove` | Admin. Save or remove one camera |
+| `POST /api/device/deploy` | Admin. Given a home-network address, install the watchdog drop-in, point the camera at the hub, and reload its screen. Uses the empty root password the camera shipped with |
+| `POST /api/treat` | Signed-in user who can call that camera, and only when treats are turned on for it |
 | `GET /signal?role=device` or `role=user` | Web socket |
 
 Passwords are stored as PBKDF2-HMAC-SHA256. The database lock is a re-entrant lock. A plain lock deadlocked on startup because opening the database also inserted the first admin while holding the same lock.

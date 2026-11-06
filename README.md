@@ -31,7 +31,7 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/login.html` | Sign-in page |
 | `hub/calls.html` | Call page for a person |
 | `hub/users.html` | Accounts, access, and expiration |
-| `hub/devices.html` | Camera settings and removal |
+| `hub/devices.html` | Camera settings, removal, treats, and one-step setup |
 | `hub/device.html` | Page the device kiosk loads during a call |
 | `hub/petchatz-hub.service` | systemd unit |
 | `hub/config.example.json` | Shape of the config file created at install |

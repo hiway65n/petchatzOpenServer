@@ -8,7 +8,7 @@ From a checkout of this repo on that machine:
 sudo ./deploy/setup.sh 192.168.1.20
 ```
 
-Replace `192.168.1.20` with the hub's LAN address. The script installs `python3-aiohttp`, `coturn`, and `openssl`, writes `/opt/petchatz-hub/`, creates a 10-year self-signed certificate for that IP, generates an admin password and a TURN password, and starts `coturn` and `petchatz-hub`.
+Replace `192.168.1.20` with the hub's LAN address. The script installs `python3-aiohttp`, `coturn`, `openssl`, `sshpass`, and an SSH client, writes `/opt/petchatz-hub/`, creates a 10-year self-signed certificate for that IP, generates an admin password and a TURN password, and starts `coturn` and `petchatz-hub`. `sshpass` is what the Devices page uses to sign in to a camera that still has an empty root password.
 
 The admin username defaults to `petchatz`. Set `ADMIN_USER` or `ADMIN_PASS` in the environment before running the script if you want to choose them. If you do not set `ADMIN_PASS`, the script prints a random one once. Store it somewhere outside this repo. The only copies on the hub are `/opt/petchatz-hub/config.json` (mode 600) and the password hash inside `/opt/petchatz-hub/hub.db`.
 
@@ -30,6 +30,7 @@ Open `https://<hub-ip>/` from another computer on the LAN and accept the certifi
 `setup.sh` will not overwrite an existing hub. Copy the changed files and restart only the hub service:
 
 ```bash
+sudo apt-get install -y sshpass
 sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/app.css hub/common.js /opt/petchatz-hub/
 sudo systemctl restart petchatz-hub
 ```
