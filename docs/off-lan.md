@@ -73,6 +73,20 @@ A self-signed certificate is generated for the LAN address and the current publi
 
 Without a proxy, forward TCP 443 to the hub as well and accept the hub's self-signed certificate in the browser. The TURN table does not change.
 
+## A tunnel instead of your own web address
+
+On Devices, under Outside the house, choose A Cloudflare Tunnel. The hostname is still the name people open, and it has to match what the browser sends. In the Cloudflare dashboard, send that hostname to `https://127.0.0.1:443` and turn on No TLS Verify. Paste the tunnel token on the Devices page. The hub stores it in `tunnel.env` and runs `cloudflared` as `petchatz-tunnel`, using HTTP/2 so the tunnel does not need outbound UDP. Install cloudflared from that same page if it is not already on the hub. Saving other settings does not download it.
+
+The tunnel replaces the inbound web-port forward. It does not replace TURN. A call still needs this hub's TURN ports, or Metered, or Cloudflare TURN.
+
+## Metered and Cloudflare TURN
+
+Call relay on the Devices page can use this hub, Metered Open Relay, Cloudflare TURN, or more than one. Leave this hub on for calls inside the house. Add one cloud relay when you do not want to forward the TURN ports. The camera and the browser must both receive that same relay, which the hub does. Host candidates still win a call that is already inside the house.
+
+You can turn a service on and save before you have an account. Calls ignore it until a domain and key, or a Cloudflare key id and token, are saved. The page then shows the last four characters of each secret. The full value stays in `config.json` and is not written to the activity log. Credentials are cached for a while, so a call does not ask the provider again every time someone opens the page. A provider that cannot be reached is left out of the list. The other relays remain.
+
+Cloudflare TURN includes a relay on port 443. That is the path for a mobile network that allows only outbound TCP 443. This hub's own TURN stays off 443, because 443 is the call page.
+
 ## A trusted name
 
 Point a DNS name at the public address. For a changing ISP address, use the DNS provider's update client rather than only the hub timer. The timer fixes TURN. It does not update DNS.
@@ -96,6 +110,6 @@ Renewal has to repeat the copy. Those two PEM files are gitignored. Let's Encryp
 - The page does not load and Zoraxy is not showing its own error: TCP 443 is not forwarded to the proxy, or the ISP blocks inbound 443. A certificate warning means the page did reach a server.
 - The page loads, the device is online, and the call stays on "checking": UDP 3478 or 49160–49200 is not forwarded, or coturn's `external-ip` is still the LAN address. `grep ^external-ip= /opt/petchatz-hub/turn.conf` should show `public/lan`.
 - The device log shows `ice host` and `ice srflx` but never `ice relay`: the device cannot reach TURN on the LAN address. `systemctl is-active coturn` should be `active`.
-- Some mobile networks allow only outbound TCP 443. This hub does not put TURN on 443, because 443 is the call page. Those networks will not connect until a later change adds a TURN listener on another reachable port.
+- Some mobile networks allow only outbound TCP 443. This hub's own TURN stays off 443, because 443 is the call page. Turn on Cloudflare TURN or Metered under Call relay. Both include a relay on 443, and both sides of the call receive it.
 
 Inside the house, keep using `https://<lan-ip>/`. Opening the public name from inside often fails even when the same name works from cellular.

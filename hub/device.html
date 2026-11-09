@@ -10,11 +10,26 @@
       position: absolute; left: 8px; top: 8px; right: 8px;
       font-size: 16px; text-shadow: 0 1px 2px #000;
     }
+    #closed {
+      display: none; position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+      background: #111; color: #fff; text-align: center;
+      font-size: 28px; line-height: 1.3; padding: 24px 16px;
+      box-sizing: border-box;
+    }
+    #closed.show { display: block; }
+    #ready-image, #closed-image {
+      display: none; position: absolute; left: 0; top: 0;
+      width: 100%; height: 100%; object-fit: cover; background: #111;
+    }
+    #ready-image.show, #closed-image.show { display: block; }
   </style>
 </head>
 <body>
   <video id="remote" autoplay playsinline></video>
+  <img id="ready-image" alt="">
+  <img id="closed-image" alt="">
   <div id="status">Starting</div>
+  <div id="closed">Out of service</div>
   <script>
     var params = new URLSearchParams(location.search);
     var deviceId = params.get("device_id") || "";
@@ -28,6 +43,35 @@
     var pendingIce = [];
     var statsTimer = null;
     var capture = {width: 320, height: 240, frameRate: 12, echoCancellation: true, noiseSuppression: true};
+    var inService = true;
+    var readyImage = false;
+    var closedImage = false;
+
+    function applyScreen(screen) {
+      screen = screen || {};
+      readyImage = !!screen.ready;
+      closedImage = !!screen.closed;
+      var rev = screen.rev || 0;
+      var readyEl = document.getElementById("ready-image");
+      var closedEl = document.getElementById("closed-image");
+      if (readyImage) readyEl.src = "/screen/ready.jpg?v=" + rev;
+      else readyEl.removeAttribute("src");
+      if (closedImage) closedEl.src = "/screen/closed.jpg?v=" + rev;
+      else closedEl.removeAttribute("src");
+      log("screen ready " + readyImage + " closed " + closedImage);
+      showService();
+    }
+
+    function showService() {
+      var showClosed = !inService && !callId;
+      document.getElementById("closed").className = (showClosed && !closedImage) ? "show" : "";
+      document.getElementById("closed-image").className = (showClosed && closedImage) ? "show" : "";
+      document.getElementById("ready-image").className = (inService && !callId && readyImage) ? "show" : "";
+      if (!callId) {
+        if (inService) setStatus(readyImage ? "" : "Ready");
+        else setStatus(closedImage ? "" : "Out of service");
+      }
+    }
 
     function applyFlag(value, current) {
       if (value === true || value === false) return value;
@@ -219,6 +263,15 @@
         iceServers = data.iceServers;
         log("ice servers " + iceServers.length);
         applyCapture(data.capture);
+        inService = data.open !== false;
+        log(inService ? "service open" : "service closed");
+        applyScreen(data.screen);
+      } else if (data.type === "screen") {
+        applyScreen(data);
+      } else if (data.type === "service") {
+        inService = data.open !== false;
+        log(inService ? "service open" : "service closed");
+        showService();
       } else if (data.type === "capture") {
         applyCapture(data);
       } else if (data.type === "ring") {
@@ -228,6 +281,7 @@
         }
         callId = data.call_id;
         setStatus("Connecting");
+        showService();
         openCall();
       } else if (data.type === "answer" && pc && data.call_id === callId) {
         pc.setRemoteDescription({type: "answer", sdp: data.sdp}).then(function() {
@@ -248,7 +302,7 @@
         pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(function(err) { log(err); });
       } else if (data.type === "hangup" && data.call_id === callId) {
         stopMedia();
-        setStatus("Ready");
+        showService();
       } else if (data.type === "treat") {
         if (localWs && localWs.readyState === 1) {
           localWs.send("/dispense/treat");
@@ -325,8 +379,9 @@
       };
       ws.onmessage = onMessage;
       ws.onclose = function() {
-        setStatus("Reconnecting");
         stopMedia();
+        if (inService) setStatus("Reconnecting");
+        else showService();
         setTimeout(connect, 2000);
       };
     }

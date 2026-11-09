@@ -14,6 +14,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - Treats can be turned on for one camera. They stay off until then.
 - Scent can be turned on for one camera. It stays off until then. One press runs the fan for about 10 seconds.
 - An admin can schedule when each camera can be used, including weekly and one-day windows, and a block inside an open window.
+- While nobody is in a call, the camera shows Ready, or Out of service when it is outside an operating window. An admin can replace either with a JPEG. The same two pictures are used on every camera. 320 by 240 matches the screen. With no picture, the text stays.
 - Treats and scent are limited per camera over 24 hours. The limit starts at 12 and can be changed. The buttons stay off outside an open window.
 - A two-way audio and video call between a desktop browser and the device kiosk.
 - Two different units on one hub, each with its own name, picture size, frame rate, and microphone processing.
@@ -21,12 +22,11 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 
 ## Works from outside the house
 
-- The call page and its web socket, through a reverse proxy such as Zoraxy. See [off-lan.md](off-lan.md).
-- The media relay, by forwarding TURN straight to the hub. The proxy does not carry that UDP traffic.
+- The call page and its web socket, through a reverse proxy such as Zoraxy, or through a Cloudflare Tunnel configured on Devices. See [off-lan.md](off-lan.md). The tunnel carries the page only.
+- The media relay, by forwarding TURN straight to the hub, or by turning on Metered or Cloudflare TURN on Devices. The proxy does not carry that UDP traffic. Both sides of a call receive the same cloud relay.
 
 ## Not done
 
-- A still picture on the device screen while nobody is in a call. A looping video is a lower priority than the still picture.
 - A one-time password that is generated for an account and expires after a chosen time.
 - A diagnostics page that shows one device's recent log lines.
 - A mobile app. The pages already talk to the hub with JSON, which is the shape an app would use.

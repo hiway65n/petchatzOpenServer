@@ -14,3 +14,6 @@ public-key.pem
 turn.conf
 *.log
 known_hosts
+tunnel.env
+screen-ready.jpg
+screen-closed.jpg

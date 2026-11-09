@@ -13,11 +13,14 @@ import ssl
 import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from aiohttp import WSMsgType, web
+import aiohttp
+from aiohttp import ClientTimeout, WSMsgType, web
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE, "hub.db")
@@ -314,21 +317,117 @@ def turn_entries(host, cfg):
     ]
 
 
-def ice_servers(audience):
+_relay_cache = {}
+
+
+def turn_choices(cfg):
+    return {
+        "local": cfg.get("turn_local", True) is not False,
+        "metered_enabled": bool(cfg.get("metered_enabled")),
+        "metered_domain": (cfg.get("metered_domain") or "").strip(),
+        "metered_api_key": cfg.get("metered_api_key") or "",
+        "cloudflare_turn_enabled": bool(cfg.get("cloudflare_turn_enabled")),
+        "cloudflare_turn_key_id": (cfg.get("cloudflare_turn_key_id") or "").strip(),
+        "cloudflare_turn_token": cfg.get("cloudflare_turn_token") or "",
+    }
+
+
+def flatten_ice(servers):
+    entries = []
+    for item in servers or []:
+        if not isinstance(item, dict):
+            continue
+        urls = item.get("urls")
+        if isinstance(urls, str):
+            urls = [urls]
+        username = item.get("username") or ""
+        credential = item.get("credential") or ""
+        for url in urls or []:
+            if not isinstance(url, str) or url.split("?", 1)[0].endswith(":53"):
+                continue
+            entry = {"urls": url}
+            if username:
+                entry["username"] = username
+                entry["credential"] = credential
+            entries.append(entry)
+    return entries
+
+
+async def fetch_json(method, url, headers=None, payload=None):
+    timeout = ClientTimeout(total=8)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.request(method, url, headers=headers, json=payload) as response:
+            if response.status >= 400:
+                raise ValueError("status %s" % response.status)
+            return await response.json(content_type=None)
+
+
+async def cached_relay(name, ttl, factory):
+    now = time.monotonic()
+    hit = _relay_cache.get(name)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        servers = flatten_ice(await factory())
+    except Exception:
+        log.warning("relay %s is not available", name)
+        if hit:
+            return hit[1]
+        return []
+    if servers:
+        _relay_cache[name] = (now + ttl, servers)
+    return servers
+
+
+async def metered_ice(domain, api_key):
+    url = "https://%s/api/v1/turn/credentials?apiKey=%s" % (domain, urllib.parse.quote(api_key, safe=""))
+
+    async def factory():
+        body = await fetch_json("GET", url)
+        if isinstance(body, dict):
+            return body.get("iceServers") or []
+        return body
+
+    return await cached_relay("metered:" + domain, 1800, factory)
+
+
+async def cloudflare_ice(key_id, token):
+    url = "https://rtc.live.cloudflare.com/v1/turn/keys/%s/credentials/generate-ice-servers" % key_id
+
+    async def factory():
+        body = await fetch_json(
+            "POST",
+            url,
+            headers={"Authorization": "Bearer " + token},
+            payload={"ttl": 43200},
+        )
+        return (body or {}).get("iceServers") or []
+
+    return await cached_relay("cloudflare:" + key_id, 3600, factory)
+
+
+async def ice_servers(audience):
     """LAN callers and the device use the hub's private address.
 
     A browser that opened the public name gets that name instead. The device
     stays on the private address so a call does not depend on the router
-    looping public traffic back into the house.
+    looping public traffic back into the house. Cloud relays are added for
+    every caller when an admin has turned them on.
     """
     cfg = load_config()
+    choices = turn_choices(cfg)
     servers = [{"urls": "stun:stun.l.google.com:19302"}]
     public = (cfg.get("public_host") or "").strip()
     lan = (cfg.get("lan_ip") or "").strip()
-    if audience == "public" and public:
-        servers.extend(turn_entries(public, cfg))
-    elif lan:
-        servers.extend(turn_entries(lan, cfg))
+    if choices["local"]:
+        if audience == "public" and public:
+            servers.extend(turn_entries(public, cfg))
+        elif lan:
+            servers.extend(turn_entries(lan, cfg))
+    if choices["metered_enabled"] and choices["metered_domain"] and choices["metered_api_key"]:
+        servers.extend(await metered_ice(choices["metered_domain"], choices["metered_api_key"]))
+    if choices["cloudflare_turn_enabled"] and choices["cloudflare_turn_key_id"] and choices["cloudflare_turn_token"]:
+        servers.extend(await cloudflare_ice(choices["cloudflare_turn_key_id"], choices["cloudflare_turn_token"]))
     return servers
 
 
@@ -823,6 +922,56 @@ async def send_json(ws, payload):
         log.info("socket send failed")
 
 
+def screen_path(kind):
+    if kind not in ("ready", "closed"):
+        raise ValueError("choose the ready picture or the out of service picture")
+    return os.path.join(BASE, "screen-%s.jpg" % kind)
+
+
+def screen_state():
+    rev = 0
+    state = {}
+    for kind in ("ready", "closed"):
+        path = screen_path(kind)
+        present = os.path.isfile(path)
+        state[kind] = present
+        if present:
+            rev = max(rev, int(os.path.getmtime(path)))
+    state["rev"] = rev
+    return state
+
+
+def save_jpeg(kind, data):
+    if len(data) < 100 or len(data) > 1024 * 1024:
+        raise ValueError("use a JPEG no larger than 1 MB")
+    if not data.startswith(b"\xff\xd8\xff") or b"\xff\xd9" not in data:
+        raise ValueError("that file is not a JPEG")
+    path = screen_path(kind)
+    temporary = path + ".tmp"
+    with open(temporary, "wb") as fh:
+        fh.write(data)
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, path)
+
+
+async def push_screen():
+    payload = screen_state()
+    payload["type"] = "screen"
+    for info in list(devices.values()):
+        ws = info.get("ws")
+        if ws is None or ws.closed:
+            continue
+        await send_json(ws, payload)
+
+
+async def push_service():
+    for device_id, info in list(devices.items()):
+        ws = info.get("ws")
+        if ws is None or ws.closed:
+            continue
+        await send_json(ws, {"type": "service", "open": bool(camera_access(device_id)["open"])})
+
+
 async def push_devices():
     dead = []
     for user_id, sockets in list(user_sockets.items()):
@@ -888,7 +1037,7 @@ async def ice(request):
         raise web.HTTPUnauthorized()
     audience = request_audience(request)
     log.info("ice list for signed-in user via %s", audience)
-    return web.json_response({"iceServers": ice_servers(audience)})
+    return web.json_response({"iceServers": await ice_servers(audience)})
 
 
 async def device_page(_request):
@@ -1180,17 +1329,159 @@ async def api_account(request):
     return web.json_response({"ok": True})
 
 
+def last4(value):
+    text = value or ""
+    if len(text) < 4:
+        return ""
+    return text[-4:]
+
+
+def clean_secret(value, label):
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if any(ch.isspace() or ord(ch) < 32 for ch in text):
+        raise ValueError(label + " cannot include spaces")
+    if len(text) > 4000:
+        raise ValueError(label + " is too long")
+    return text
+
+
+def clean_key_id(value):
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,80}", text):
+        raise ValueError("the Cloudflare key id should be the id from the TURN key, without the token")
+    return text
+
+
+def clean_metered_domain(value):
+    text = (value or "").strip().lower()
+    text = re.sub(r"^https?://", "", text).strip("/")
+    if "/" in text:
+        text = text.split("/", 1)[0]
+    return clean_public_host(text)
+
+
+def cloudflared_path():
+    for candidate in ("/usr/local/bin/cloudflared", "/usr/bin/cloudflared"):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil_which("cloudflared")
+
+
+def tunnel_unit(binary):
+    return """[Unit]
+Description=PetChatz Cloudflare Tunnel
+After=network-online.target
+
+[Service]
+EnvironmentFile=%s
+ExecStart=%s --no-autoupdate tunnel --protocol http2 run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""" % (os.path.join(BASE, "tunnel.env"), binary)
+
+
+def write_tunnel_env(token):
+    path = os.path.join(BASE, "tunnel.env")
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as fh:
+        fh.write("TUNNEL_TOKEN=%s\n" % token)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def tunnel_running():
+    completed = subprocess.run(
+        ["systemctl", "is-active", "--quiet", "petchatz-tunnel.service"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def apply_tunnel(mode, token):
+    binary = cloudflared_path()
+    if mode != "tunnel" or not token:
+        subprocess.run(["systemctl", "disable", "--now", "petchatz-tunnel.service"], capture_output=True, text=True, timeout=20, check=False)
+        return "The page tunnel is off."
+    if not binary:
+        return "The tunnel token is saved. Install cloudflared on the hub before it can start."
+    unit_path = "/etc/systemd/system/petchatz-tunnel.service"
+    with open(unit_path, "w", encoding="utf-8") as fh:
+        fh.write(tunnel_unit(binary))
+    write_tunnel_env(token)
+    subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True, timeout=20, check=False)
+    completed = subprocess.run(
+        ["systemctl", "enable", "--now", "petchatz-tunnel.service"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    subprocess.run(["systemctl", "restart", "petchatz-tunnel.service"], capture_output=True, text=True, timeout=30, check=False)
+    if not tunnel_running():
+        detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+        log.warning("tunnel did not start: %s", (detail[-1] if detail else "no output")[:200])
+        return "The tunnel token is saved, but cloudflared did not stay running."
+    return "The Cloudflare Tunnel is running."
+
+
+def tunnel_note(cfg):
+    mode = cfg.get("access_mode") or "hostname"
+    token = cfg.get("tunnel_token") or ""
+    if mode != "tunnel":
+        return "The page tunnel is off."
+    if not token:
+        return "Tunnel mode is on. Add a token when you have one."
+    if not cloudflared_path():
+        return "The tunnel token is saved. Install cloudflared on the hub before it can start."
+    if tunnel_running():
+        return "The Cloudflare Tunnel is running."
+    return "The tunnel token is saved, but cloudflared is not running."
+
+
+def settings_view(cfg):
+    return {
+        "public_host": cfg.get("public_host") or "",
+        "lan_ip": cfg.get("lan_ip") or "",
+        "access_mode": cfg.get("access_mode") or "hostname",
+        "turn_local": cfg.get("turn_local", True) is not False,
+        "metered_enabled": bool(cfg.get("metered_enabled")),
+        "metered_domain": cfg.get("metered_domain") or "",
+        "metered_api_key_set": bool(cfg.get("metered_api_key")),
+        "metered_api_key_last4": last4(cfg.get("metered_api_key")),
+        "cloudflare_turn_enabled": bool(cfg.get("cloudflare_turn_enabled")),
+        "cloudflare_turn_key_id": cfg.get("cloudflare_turn_key_id") or "",
+        "cloudflare_turn_token_set": bool(cfg.get("cloudflare_turn_token")),
+        "cloudflare_turn_token_last4": last4(cfg.get("cloudflare_turn_token")),
+        "tunnel_token_set": bool(cfg.get("tunnel_token")),
+        "tunnel_token_last4": last4(cfg.get("tunnel_token")),
+        "cloudflared_installed": bool(cloudflared_path()),
+        "tunnel_status": tunnel_note(cfg),
+    }
+
+
+def keep_secret(body, field, clear_field, current):
+    if body.get(clear_field):
+        return ""
+    if field in body and (body.get(field) or "").strip():
+        return body.get(field)
+    return current
+
+
 async def api_settings(request):
     user = request_user(request)
     if user is None or user["role"] != "admin":
         raise web.HTTPForbidden()
-    cfg = load_config()
-    return web.json_response(
-        {
-            "public_host": cfg.get("public_host") or "",
-            "lan_ip": cfg.get("lan_ip") or "",
-        }
-    )
+    return web.json_response(settings_view(load_config()))
 
 
 async def api_settings_save(request):
@@ -1198,21 +1489,113 @@ async def api_settings_save(request):
     if user is None or user["role"] != "admin":
         raise web.HTTPForbidden()
     body = await request.json()
+    cfg = load_config()
+    if "access_mode" in body:
+        mode = (body.get("access_mode") or "hostname").strip()
+    else:
+        mode = cfg.get("access_mode") or "hostname"
+    if mode not in ("hostname", "tunnel"):
+        raise web.HTTPBadRequest(text="choose a web address or a tunnel")
     try:
-        public_host = clean_public_host(body.get("public_host"))
+        public_host = clean_public_host(body.get("public_host")) if "public_host" in body else (cfg.get("public_host") or "")
+        metered_domain = clean_metered_domain(body.get("metered_domain")) if "metered_domain" in body else (cfg.get("metered_domain") or "")
+        key_id = clean_key_id(body.get("cloudflare_turn_key_id")) if "cloudflare_turn_key_id" in body else (cfg.get("cloudflare_turn_key_id") or "")
+        metered_key = clean_secret(body.get("metered_api_key"), "Metered API key") if (body.get("metered_api_key") or "").strip() else ""
+        cf_token = clean_secret(body.get("cloudflare_turn_token"), "Cloudflare token") if (body.get("cloudflare_turn_token") or "").strip() else ""
+        tunnel_token = clean_secret(body.get("tunnel_token"), "Tunnel token") if (body.get("tunnel_token") or "").strip() else ""
     except ValueError as exc:
         raise web.HTTPBadRequest(text=str(exc))
-    cfg = load_config()
+    previous_mode = cfg.get("access_mode") or "hostname"
+    previous_token = cfg.get("tunnel_token") or ""
     cfg["public_host"] = public_host
+    cfg["access_mode"] = mode
+    if "turn_local" in body:
+        cfg["turn_local"] = bool(body.get("turn_local"))
+    if "metered_enabled" in body:
+        cfg["metered_enabled"] = bool(body.get("metered_enabled"))
+    if "metered_domain" in body:
+        cfg["metered_domain"] = metered_domain
+    cfg["metered_api_key"] = keep_secret(body, "metered_api_key", "metered_api_key_clear", cfg.get("metered_api_key") or "")
+    if metered_key:
+        cfg["metered_api_key"] = metered_key
+    if "cloudflare_turn_enabled" in body:
+        cfg["cloudflare_turn_enabled"] = bool(body.get("cloudflare_turn_enabled"))
+    if "cloudflare_turn_key_id" in body:
+        cfg["cloudflare_turn_key_id"] = key_id
+    cfg["cloudflare_turn_token"] = keep_secret(body, "cloudflare_turn_token", "cloudflare_turn_token_clear", cfg.get("cloudflare_turn_token") or "")
+    if cf_token:
+        cfg["cloudflare_turn_token"] = cf_token
+    cfg["tunnel_token"] = keep_secret(body, "tunnel_token", "tunnel_token_clear", cfg.get("tunnel_token") or "")
+    if tunnel_token:
+        cfg["tunnel_token"] = tunnel_token
     save_config(cfg)
-    log.info("external address set to %s", public_host or "(none)")
-    record_audit(
-        user["username"],
-        user["role"],
-        "Saved the external address",
-        detail=public_host or "(cleared)",
+    _relay_cache.clear()
+    note = ""
+    token_now = cfg.get("tunnel_token") or ""
+    changed = (previous_mode, previous_token) != (mode, token_now)
+    needs_start = mode == "tunnel" and bool(token_now) and not tunnel_running()
+    if changed or needs_start:
+        try:
+            note = await asyncio.get_running_loop().run_in_executor(None, apply_tunnel, mode, token_now)
+        except (OSError, subprocess.TimeoutExpired):
+            log.exception("tunnel update failed")
+            note = "The settings were saved, but the tunnel could not be changed."
+    detail = "%s %s, local %s, metered %s, cloudflare %s" % (
+        mode,
+        public_host or "(no name)",
+        "on" if cfg.get("turn_local", True) is not False else "off",
+        "on" if cfg.get("metered_enabled") else "off",
+        "on" if cfg.get("cloudflare_turn_enabled") else "off",
     )
-    return web.json_response({"ok": True, "public_host": public_host})
+    log.info("outside access %s", detail)
+    record_audit(user["username"], user["role"], "Saved outside access", detail=detail)
+    view = settings_view(cfg)
+    view["ok"] = True
+    view["notice"] = note
+    return web.json_response(view)
+
+
+def install_cloudflared():
+    machine = os.uname().machine
+    arch = {"x86_64": "amd64", "aarch64": "arm64", "armv7l": "arm"}.get(machine)
+    if not arch:
+        raise ValueError("this hub's processor does not have a published cloudflared build")
+    url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-%s" % arch
+    destination = "/usr/local/bin/cloudflared"
+    temporary = destination + ".tmp"
+    request = urllib.request.Request(url, headers={"User-Agent": "petchatz-hub"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = response.read()
+    if len(data) < 1000000 or not data.startswith(b"\x7fELF"):
+        raise ValueError("the cloudflared download was not a program")
+    with open(temporary, "wb") as fh:
+        fh.write(data)
+    os.chmod(temporary, 0o755)
+    os.replace(temporary, destination)
+
+
+async def api_tunnel_install(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    if cloudflared_path():
+        return web.json_response({"ok": True, "notice": "cloudflared is already installed."})
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, install_cloudflared)
+    except (OSError, ValueError, aiohttp.ClientError) as exc:
+        log.warning("cloudflared install failed: %s", exc)
+        raise web.HTTPBadRequest(text=str(exc) or "cloudflared could not be installed")
+    record_audit(user["username"], user["role"], "Installed cloudflared")
+    cfg = load_config()
+    notice = "cloudflared is installed."
+    if (cfg.get("access_mode") or "") == "tunnel" and cfg.get("tunnel_token"):
+        try:
+            notice = await asyncio.get_running_loop().run_in_executor(
+                None, apply_tunnel, "tunnel", cfg.get("tunnel_token") or ""
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            notice = "cloudflared is installed, but the tunnel did not start."
+    return web.json_response({"ok": True, "notice": notice, "cloudflared_installed": True, "tunnel_status": tunnel_note(cfg)})
 
 
 async def api_device_save(request):
@@ -1648,7 +2031,7 @@ async def signal(request):
             {
                 "type": "devices",
                 "devices": device_snapshot(user),
-                "iceServers": ice_servers(audience),
+                "iceServers": await ice_servers(audience),
             },
         )
         try:
@@ -1710,8 +2093,10 @@ async def device_loop(ws):
                 ws,
                 {
                     "type": "hello",
-                    "iceServers": ice_servers("lan"),
+                    "iceServers": await ice_servers("lan"),
                     "capture": capture_payload(device_id),
+                    "open": bool(camera_access(device_id)["open"]),
+                    "screen": screen_state(),
                 },
             )
             await push_devices()
@@ -1884,6 +2269,7 @@ async def api_hours_zone(request):
     save_config(cfg)
     record_audit(user["username"], user["role"], "Set the house time zone", detail=name)
     await push_devices()
+    await push_service()
     return web.json_response({"ok": True, "timezone": name})
 
 
@@ -1922,6 +2308,7 @@ async def api_hours_add(request):
         detail=window_label(rule),
     )
     await push_devices()
+    await push_service()
     return web.json_response({"ok": True, "id": rule_id})
 
 
@@ -1951,6 +2338,7 @@ async def api_hours_remove(request):
         detail=window_label(dict(row)),
     )
     await push_devices()
+    await push_service()
     return web.json_response({"ok": True})
 
 
@@ -1999,6 +2387,10 @@ async def hours_loop():
                 )
             if previous is not None and current != previous:
                 await push_devices()
+                opened = {device_id: values[0] for device_id, values in current.items()}
+                was_open = {device_id: values[0] for device_id, values in previous.items()}
+                if opened != was_open:
+                    await push_service()
             previous = current
         except Exception:
             log.exception("hours check failed")
@@ -2062,8 +2454,79 @@ async def api_audit(request):
     return web.json_response({"entries": [dict(row) for row in rows]})
 
 
+async def api_screen(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    return web.json_response(screen_state())
+
+
+async def api_screen_save(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    kind = request.query.get("which") or ""
+    try:
+        screen_path(kind)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "image":
+        raise web.HTTPBadRequest(text="choose a JPEG")
+    chunks = bytearray()
+    while True:
+        piece = await field.read_chunk(65536)
+        if not piece:
+            break
+        chunks.extend(piece)
+        if len(chunks) > 1024 * 1024:
+            raise web.HTTPBadRequest(text="use a JPEG no larger than 1 MB")
+    try:
+        save_jpeg(kind, bytes(chunks))
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    label = "ready" if kind == "ready" else "out of service"
+    record_audit(user["username"], user["role"], "Saved the %s screen picture" % label)
+    await push_screen()
+    state = screen_state()
+    state["ok"] = True
+    return web.json_response(state)
+
+
+async def api_screen_remove(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    kind = body.get("which") or ""
+    try:
+        path = screen_path(kind)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    if os.path.isfile(path):
+        os.remove(path)
+    label = "ready" if kind == "ready" else "out of service"
+    record_audit(user["username"], user["role"], "Removed the %s screen picture" % label)
+    await push_screen()
+    state = screen_state()
+    state["ok"] = True
+    return web.json_response(state)
+
+
+async def screen_image(request):
+    kind = request.match_info["which"]
+    try:
+        path = screen_path(kind)
+    except ValueError:
+        raise web.HTTPNotFound()
+    if not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "no-cache"})
+
+
 def make_app():
-    app = web.Application()
+    app = web.Application(client_max_size=2 * 1024 * 1024)
     app.cleanup_ctx.append(hours_watch)
     app.add_routes(
         [
@@ -2092,8 +2555,13 @@ def make_app():
             web.post("/api/device/deploy", api_device_deploy),
             web.post("/api/treat", api_treat),
             web.post("/api/scent", api_scent),
+            web.get("/screen/{which}.jpg", screen_image),
+            web.get("/api/screen", api_screen),
+            web.post("/api/screen", api_screen_save),
+            web.post("/api/screen/remove", api_screen_remove),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
+            web.post("/api/tunnel/install", api_tunnel_install),
             web.get("/api/audit", api_audit),
             web.get("/api/hours", api_hours),
             web.post("/api/hours", api_hours_add),

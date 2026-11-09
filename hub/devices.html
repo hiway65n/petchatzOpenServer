@@ -20,10 +20,53 @@
     </nav>
     <h2>Outside the house</h2>
     <form id="public-host" class="card">
-      <label for="public-host-input">External address</label>
+      <label for="access-mode">How people open the page</label>
+      <select id="access-mode">
+        <option value="hostname">A web address I publish</option>
+        <option value="tunnel">A Cloudflare Tunnel</option>
+      </select>
+      <label id="host-label" for="public-host-input">External address</label>
       <input id="public-host-input" name="public_host" placeholder="petchatz.example.net" autocomplete="off">
-      <button class="ghost" type="submit">Save external address</button>
-      <p class="sub">People away from home open https:// and this name. The proxy handles that page. The device keeps using the address inside the house.</p>
+      <div id="tunnel-fields" class="hidden">
+        <label for="tunnel-token">Tunnel token</label>
+        <input id="tunnel-token" type="password" autocomplete="new-password">
+        <p id="tunnel-note" class="sub"></p>
+        <div class="checks">
+          <label><input id="tunnel-clear" type="checkbox"> Remove the saved token</label>
+        </div>
+        <p id="tunnel-status" class="sub"></p>
+        <button id="install-cloudflared" class="ghost" type="button">Install cloudflared</button>
+      </div>
+      <p id="outside-help" class="sub">People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.</p>
+      <h2>Call relay</h2>
+      <p class="sub">A call inside the house still prefers a direct path. Use one cloud relay plus this hub. The camera gathers addresses on one core, so turning both cloud relays on at once makes that slower.</p>
+      <div class="checks">
+        <label><input id="turn-local" type="checkbox"> This hub</label>
+      </div>
+      <p class="sub">Uses the TURN ports forwarded to this machine.</p>
+      <div class="checks">
+        <label><input id="metered-enabled" type="checkbox"> Metered Open Relay</label>
+      </div>
+      <label for="metered-domain">Metered domain</label>
+      <input id="metered-domain" placeholder="yourapp.metered.live" autocomplete="off">
+      <label for="metered-key">Metered API key</label>
+      <input id="metered-key" type="password" autocomplete="new-password">
+      <p id="metered-note" class="sub"></p>
+      <div class="checks">
+        <label><input id="metered-clear" type="checkbox"> Remove the saved Metered key</label>
+      </div>
+      <div class="checks">
+        <label><input id="cf-enabled" type="checkbox"> Cloudflare TURN</label>
+      </div>
+      <label for="cf-key-id">Cloudflare TURN key id</label>
+      <input id="cf-key-id" autocomplete="off">
+      <label for="cf-token">Cloudflare API token</label>
+      <input id="cf-token" type="password" autocomplete="new-password">
+      <p id="cf-note" class="sub"></p>
+      <div class="checks">
+        <label><input id="cf-clear" type="checkbox"> Remove the saved Cloudflare token</label>
+      </div>
+      <button type="submit">Save outside access</button>
     </form>
     <h2>Set up a camera</h2>
     <form id="deploy-device" class="card">
@@ -31,6 +74,24 @@
       <input id="deploy-ip" name="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off" required>
       <button type="submit">Deploy to this camera</button>
       <p class="sub">One press installs the watchdog change, points the camera at this hub, and reloads its screen. The camera must be on the home network and still use the empty root password it shipped with. A camera that is already set up is left running.</p>
+    </form>
+    <h2>Camera screen</h2>
+    <form id="screen-ready" class="card">
+      <label for="ready-file">Ready picture</label>
+      <img id="preview-ready" class="screen-preview hidden" alt="">
+      <p id="ready-note" class="sub">No picture. The screen shows Ready.</p>
+      <input id="ready-file" type="file" accept="image/jpeg,.jpg,.jpeg">
+      <button type="submit">Save ready picture</button>
+      <button id="remove-ready" class="ghost hidden" type="button">Remove ready picture</button>
+    </form>
+    <form id="screen-closed" class="card">
+      <label for="closed-file">Out of service picture</label>
+      <img id="preview-closed" class="screen-preview hidden" alt="">
+      <p id="closed-note" class="sub">No picture. The screen shows Out of service.</p>
+      <input id="closed-file" type="file" accept="image/jpeg,.jpg,.jpeg">
+      <button type="submit">Save out of service picture</button>
+      <button id="remove-closed" class="ghost hidden" type="button">Remove out of service picture</button>
+      <p class="sub">JPEG. 320 by 240 pixels matches the camera screen. A larger picture is scaled and cropped to fill it. Keep the file under 1 MB. The same two pictures are used on every camera. With no picture saved, the screen shows Ready or Out of service.</p>
     </form>
     <h2>Cameras</h2>
     <p class="sub">The name is what people see. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards. Removing a camera clears its name, settings, and who can call it. A camera that is still powered on comes back with those defaults.</p>
@@ -215,25 +276,190 @@
       });
     };
 
-    document.getElementById("public-host").onsubmit = function(event) {
-      event.preventDefault();
-      var form = event.target;
-      fetch("/api/settings", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({public_host: form.public_host.value})
-      }).then(function(r) {
-        document.getElementById("admin-msg").textContent = r.ok
-          ? "External address saved. Refresh an outside browser before the next call."
-          : "External address was not saved.";
+    function savedNote(isSet, last4) {
+      if (!isSet) return "Nothing saved yet. You can turn the service on and add this later.";
+      if (last4) return "Saved, ending in " + last4 + ". Leave the box blank to keep it.";
+      return "Saved. Leave the box blank to keep it.";
+    }
+
+    function showAccessMode() {
+      var tunnel = document.getElementById("access-mode").value === "tunnel";
+      document.getElementById("tunnel-fields").className = tunnel ? "" : "hidden";
+      document.getElementById("host-label").textContent = tunnel ? "Tunnel hostname" : "External address";
+      document.getElementById("outside-help").textContent = tunnel
+        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. The camera keeps using the address inside the house. This tunnel carries the page only. Calls still need a relay below."
+        : "People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.";
+    }
+
+    function showSettings(body) {
+      document.getElementById("access-mode").value = body.access_mode === "tunnel" ? "tunnel" : "hostname";
+      document.getElementById("public-host-input").value = body.public_host || "";
+      document.getElementById("turn-local").checked = body.turn_local !== false;
+      document.getElementById("metered-enabled").checked = !!body.metered_enabled;
+      document.getElementById("metered-domain").value = body.metered_domain || "";
+      document.getElementById("metered-key").value = "";
+      document.getElementById("metered-clear").checked = false;
+      document.getElementById("metered-note").textContent = savedNote(body.metered_api_key_set, body.metered_api_key_last4);
+      document.getElementById("cf-enabled").checked = !!body.cloudflare_turn_enabled;
+      document.getElementById("cf-key-id").value = body.cloudflare_turn_key_id || "";
+      document.getElementById("cf-token").value = "";
+      document.getElementById("cf-clear").checked = false;
+      document.getElementById("cf-note").textContent = savedNote(body.cloudflare_turn_token_set, body.cloudflare_turn_token_last4);
+      document.getElementById("tunnel-token").value = "";
+      document.getElementById("tunnel-clear").checked = false;
+      document.getElementById("tunnel-note").textContent = savedNote(body.tunnel_token_set, body.tunnel_token_last4);
+      document.getElementById("tunnel-status").textContent = body.tunnel_status || "";
+      var install = document.getElementById("install-cloudflared");
+      install.className = body.cloudflared_installed ? "ghost hidden" : "ghost";
+      showAccessMode();
+    }
+
+    function loadSettings() {
+      return fetch("/api/settings").then(function(r) { return r.json(); }).then(showSettings);
+    }
+
+    document.getElementById("access-mode").onchange = showAccessMode;
+
+    document.getElementById("install-cloudflared").onclick = function() {
+      var button = document.getElementById("install-cloudflared");
+      button.disabled = true;
+      document.getElementById("admin-msg").textContent = "Installing cloudflared. This can take a minute.";
+      fetch("/api/tunnel/install", {method: "POST"}).then(function(r) {
+        button.disabled = false;
+        if (!r.ok) {
+          say("admin-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          document.getElementById("admin-msg").textContent = body.notice || "cloudflared is installed.";
+          loadSettings();
+        });
+      }).catch(function() {
+        button.disabled = false;
+        document.getElementById("admin-msg").textContent = "cloudflared was not installed.";
       });
     };
 
+    document.getElementById("public-host").onsubmit = function(event) {
+      event.preventDefault();
+      var body = {
+        access_mode: document.getElementById("access-mode").value,
+        public_host: document.getElementById("public-host-input").value,
+        turn_local: document.getElementById("turn-local").checked,
+        metered_enabled: document.getElementById("metered-enabled").checked,
+        metered_domain: document.getElementById("metered-domain").value,
+        metered_api_key_clear: document.getElementById("metered-clear").checked,
+        cloudflare_turn_enabled: document.getElementById("cf-enabled").checked,
+        cloudflare_turn_key_id: document.getElementById("cf-key-id").value,
+        cloudflare_turn_token_clear: document.getElementById("cf-clear").checked,
+        tunnel_token_clear: document.getElementById("tunnel-clear").checked
+      };
+      var meteredKey = document.getElementById("metered-key").value;
+      var cfToken = document.getElementById("cf-token").value;
+      var tunnelToken = document.getElementById("tunnel-token").value;
+      if (meteredKey) body.metered_api_key = meteredKey;
+      if (cfToken) body.cloudflare_turn_token = cfToken;
+      if (tunnelToken) body.tunnel_token = tunnelToken;
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      }).then(function(r) {
+        if (!r.ok) {
+          say("admin-msg", r, "");
+          return;
+        }
+        r.json().then(function(saved) {
+          showSettings(saved);
+          document.getElementById("admin-msg").textContent = saved.notice || "Outside access saved. Refresh an outside browser before the next call.";
+        });
+      }).catch(function() {
+        document.getElementById("admin-msg").textContent = "Outside access was not saved.";
+      });
+    };
+
+    function showScreen(body) {
+      paintScreen("ready", body.ready, body.rev, "No picture. The screen shows Ready.");
+      paintScreen("closed", body.closed, body.rev, "No picture. The screen shows Out of service.");
+    }
+
+    function paintScreen(which, on, rev, emptyText) {
+      var img = document.getElementById("preview-" + which);
+      var note = document.getElementById(which + "-note");
+      var remove = document.getElementById("remove-" + which);
+      if (on) {
+        img.src = "/screen/" + which + ".jpg?v=" + rev;
+        img.className = "screen-preview";
+        note.className = "sub hidden";
+        remove.className = "ghost";
+      } else {
+        img.removeAttribute("src");
+        img.className = "screen-preview hidden";
+        note.className = "sub";
+        note.textContent = emptyText;
+        remove.className = "ghost hidden";
+      }
+    }
+
+    function loadScreen() {
+      return fetch("/api/screen").then(function(r) { return r.json(); }).then(showScreen);
+    }
+
+    function uploadScreen(which, inputId) {
+      var input = document.getElementById(inputId);
+      if (!input.files || !input.files.length) {
+        document.getElementById("admin-msg").textContent = "Choose a JPEG first.";
+        return;
+      }
+      var data = new FormData();
+      data.append("image", input.files[0]);
+      fetch("/api/screen?which=" + which, {method: "POST", body: data}).then(function(r) {
+        if (!r.ok) {
+          say("admin-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          input.value = "";
+          showScreen(body);
+          document.getElementById("admin-msg").textContent = "Screen picture saved. The cameras update when they are idle.";
+        });
+      }).catch(function() {
+        document.getElementById("admin-msg").textContent = "Screen picture was not saved.";
+      });
+    }
+
+    function removeScreen(which) {
+      fetch("/api/screen/remove", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({which: which})
+      }).then(function(r) {
+        if (!r.ok) {
+          say("admin-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          showScreen(body);
+          document.getElementById("admin-msg").textContent = "Screen picture removed. The cameras go back to text.";
+        });
+      });
+    }
+
+    document.getElementById("screen-ready").onsubmit = function(event) {
+      event.preventDefault();
+      uploadScreen("ready", "ready-file");
+    };
+    document.getElementById("screen-closed").onsubmit = function(event) {
+      event.preventDefault();
+      uploadScreen("closed", "closed-file");
+    };
+    document.getElementById("remove-ready").onclick = function() { removeScreen("ready"); };
+    document.getElementById("remove-closed").onclick = function() { removeScreen("closed"); };
+
     requireSession(true).then(function(user) {
       if (!user) return;
-      fetch("/api/settings").then(function(r) { return r.json(); }).then(function(body) {
-        document.getElementById("public-host-input").value = body.public_host || "";
-      });
+      loadSettings();
+      loadScreen();
       loadCameras();
     });
   </script>

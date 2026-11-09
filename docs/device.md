@@ -104,6 +104,8 @@ On the device, `uptime` should keep growing past five minutes, and `journalctl -
 
 The device id is the `device_id` query on the call page, and the id in that hub log line. It is twelve hex characters. Assign that id to a user when you create one.
 
+While nobody is in a call, the screen says Ready. Outside an operating window it says Out of service, and it returns to Ready when the window opens. A call that is already underway is left in place. On Devices, Camera screen can replace either of those with a JPEG used by every camera. 320 by 240 pixels matches the screen. Removing a picture returns that screen to the text. The camera is not told when the next window starts. People on the Calls page still see that time.
+
 ## What the drop-in does not change
 
 `petchatz-ws` still has to receive `/ping` about every 5 seconds once the call page is up. The page in this repo does that. If you replace `hub/device.html` and drop that socket, the service will be restarted every 20 seconds. The board will stay up, and the kiosk's local commands will flap.

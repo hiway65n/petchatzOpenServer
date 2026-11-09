@@ -18,7 +18,7 @@ The hub forwards signaling. It does not transcode. Media is peer-to-peer WebRTC 
 2. Local JavaScript waits for `wss://localhost`.
 3. It fetches `https://<petchatz_server>/ping.json`.
 4. On HTTP 200 it loads `https://<petchatz_server>/petchatzDevice2.html?device_id&version&hw`.
-5. That page (this repo's `device.html`) connects to `/signal?role=device`, fetches `/ice.json`, and waits for a ring.
+5. That page (this repo's `device.html`) connects to `/signal?role=device`, takes its relay list from the hello reply, and waits for a ring. While idle it shows Ready, Out of service, or a JPEG saved for every camera.
 
 ## Signaling messages
 
@@ -26,7 +26,9 @@ Text JSON on the web socket.
 
 | Type | Direction | Meaning |
 | --- | --- | --- |
-| `hello` | device to hub, then hub replies | Register `device_id`, `version`, `hw`. The reply carries the LAN ICE servers and that camera's capture settings |
+| `hello` | device to hub, then hub replies | Register `device_id`, `version`, `hw`. The reply carries the LAN ICE servers, that camera's capture settings, whether it is inside an operating window, and which idle pictures exist |
+| `service` | hub to device | The window opened or closed. The screen shows Out of service only while idle and closed |
+| `screen` | hub to device | The shared ready or out-of-service JPEG was saved or removed |
 | `capture` | hub to device | Updated picture size, frame rate, and microphone processing |
 | `treat` | hub to device | Dispense one treat. The device page sends `/dispense/treat` on `wss://localhost`. Ignored unless that camera has treats turned on |
 | `scent` | hub to device | Run the scent fan for `seconds` (10). The device page enables scent, dispenses, then sends `/stop_scent`. Ignored unless that camera has scent turned on |
@@ -64,6 +66,8 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `POST /api/scent` | Signed-in user who can call that camera, and only when scent is turned on for it. Refused outside an operating window or after that camera's 24-hour limit |
 | `GET /api/hours`, `POST /api/hours`, `POST /api/hours/remove`, `POST /api/hours/limits`, `POST /api/hours/timezone` | Admin. Operating windows, daily treat and scent limits, and the house time zone |
 | `GET /api/audit` | Admin. Newest hub actions, filtered with `username` and `device` |
+| `GET /api/screen`, `POST /api/screen`, `POST /api/screen/remove` | Admin. Upload or remove the JPEG shown on every camera while it is ready, and the JPEG shown while it is out of service |
+| `GET /screen/ready.jpg`, `GET /screen/closed.jpg` | The idle pictures, when an admin has saved them. The camera page loads these |
 | `GET /signal?role=device` or `role=user` | Web socket |
 
 Passwords are stored as PBKDF2-HMAC-SHA256. The database lock is a re-entrant lock. A plain lock deadlocked on startup because opening the database also inserted the first admin while holding the same lock.
@@ -81,6 +85,8 @@ ICE servers depend on who is asking. The device, and a browser that opened the L
 - `turn:<hub-lan-ip>:3478` over UDP and TCP, with the TURN user from `config.json`
 
 A signed-in browser that opened `public_host` gets the same list with that public name in place of the LAN address. The device never uses the public name, so a missing NAT hairpin does not take the kiosk offline.
+
+An admin can also turn on Metered Open Relay, Cloudflare TURN, or both, from Devices. The hub fetches those credentials and adds the same entries for the camera and for every browser. Keys stay in `config.json`. The settings page shows only the last four characters. If a fetch fails, the list still includes Google STUN and this hub's TURN when that box is checked. Leave this hub's TURN on for calls inside the house. One cloud relay is enough. Both at once makes the camera spend longer gathering addresses.
 
 `/ice.json` requires a login. The device gets its list in the `hello` reply on its socket. coturn's `external-ip` is `public/lan` after `deploy/enable-offlan.sh`, so a relay candidate uses the address an outside browser can send to. Relay ports are UDP 49160–49200. See [off-lan.md](off-lan.md).
 

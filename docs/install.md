@@ -41,12 +41,15 @@ Restarting the hub drops live calls. It does not reboot the device. If `device.h
 
 | File | Purpose |
 | --- | --- |
-| `/opt/petchatz-hub/config.json` | LAN IP, TURN user, TURN password, first admin, and optional `timezone` |
+| `/opt/petchatz-hub/config.json` | LAN IP, TURN user, TURN password, first admin, optional `timezone`, and the outside-access choices from the Devices page |
 | `/opt/petchatz-hub/cert.pem` and `key.pem` | TLS certificate for the hub IP |
 | `/opt/petchatz-hub/turn.conf` | coturn config, including the TURN password |
 | `/opt/petchatz-hub/hub.db` | Accounts, sessions, camera settings, operating windows, treat and scent counts, and the activity log |
+| `/opt/petchatz-hub/screen-ready.jpg` and `screen-closed.jpg` | Optional idle pictures from the Devices page. Missing files mean the camera shows text |
 
 `hub/config.example.json` shows the keys only. Do not copy a live `config.json` into git. Leave `timezone` empty to use the hub's own clock. An admin can set a house time zone, such as `America/Chicago`, on the Schedule page. That value is what operating windows use.
+
+Metered, Cloudflare TURN, and a Cloudflare Tunnel are optional and are filled in on the Devices page. The installer does not download `cloudflared`. When a tunnel token is saved, the hub writes `/opt/petchatz-hub/tunnel.env` (mode 600, gitignored) and starts `petchatz-tunnel`. Clearing the token or switching back to a web address stops that service. It does not restart `petchatz.service` on a camera.
 
 ## Firewall
 
