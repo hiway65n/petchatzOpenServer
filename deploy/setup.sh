@@ -37,7 +37,7 @@ apt-get install -y -qq python3-aiohttp coturn openssl sshpass openssh-client
 install -d -m 755 "$DEST"
 install -m 644 "$ROOT/hub/server.py" "$ROOT/hub/device.html" \
   "$ROOT/hub/login.html" "$ROOT/hub/calls.html" "$ROOT/hub/users.html" \
-  "$ROOT/hub/devices.html" "$ROOT/hub/app.css" "$ROOT/hub/common.js" "$DEST/"
+  "$ROOT/hub/devices.html" "$ROOT/hub/schedule.html" "$ROOT/hub/audit.html" "$ROOT/hub/app.css" "$ROOT/hub/common.js" "$DEST/"
 install -m 644 "$ROOT/hub/petchatz-hub.service" /etc/systemd/system/petchatz-hub.service
 
 TURN_PASS="$(openssl rand -hex 16)"

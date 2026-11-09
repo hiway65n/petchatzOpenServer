@@ -14,6 +14,8 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import WSMsgType, web
 
@@ -29,6 +31,20 @@ db = None
 devices = {}
 # device_id -> last treat request time
 treat_sent_at = {}
+# device_id -> last scent request time
+scent_sent_at = {}
+SCENT_SECONDS = 10
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+HOUSE_ZONES = (
+    "America/Chicago",
+    "America/New_York",
+    "America/Denver",
+    "America/Phoenix",
+    "America/Los_Angeles",
+    "America/Anchorage",
+    "Pacific/Honolulu",
+    "Etc/UTC",
+)
 # user_id -> set of websockets
 user_sockets = {}
 # call_id -> {device_id, user_id, user_ws}
@@ -93,7 +109,38 @@ def connect_db():
                 frame_rate INTEGER NOT NULL DEFAULT 12,
                 echo_cancel INTEGER NOT NULL DEFAULT 1,
                 noise_suppression INTEGER NOT NULL DEFAULT 1,
-                treats_enabled INTEGER NOT NULL DEFAULT 0
+                treats_enabled INTEGER NOT NULL DEFAULT 0,
+                scent_enabled INTEGER NOT NULL DEFAULT 0,
+                treat_daily_max INTEGER NOT NULL DEFAULT 12,
+                scent_daily_max INTEGER NOT NULL DEFAULT 12
+            );
+            CREATE TABLE IF NOT EXISTS hours (
+                id INTEGER PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                repeat TEXT NOT NULL,
+                days TEXT NOT NULL DEFAULT '',
+                start_min INTEGER NOT NULL,
+                end_min INTEGER NOT NULL,
+                on_date TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS feature_uses (
+                id INTEGER PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                feature TEXT NOT NULL,
+                at INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS audit (
+                id INTEGER PRIMARY KEY,
+                at INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT '',
+                nickname TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT ''
             );
             """
         )
@@ -104,6 +151,12 @@ def connect_db():
             db.execute("ALTER TABLE devices ADD COLUMN noise_suppression INTEGER NOT NULL DEFAULT 1")
         if "treats_enabled" not in columns:
             db.execute("ALTER TABLE devices ADD COLUMN treats_enabled INTEGER NOT NULL DEFAULT 0")
+        if "scent_enabled" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN scent_enabled INTEGER NOT NULL DEFAULT 0")
+        if "treat_daily_max" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN treat_daily_max INTEGER NOT NULL DEFAULT 12")
+        if "scent_daily_max" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN scent_daily_max INTEGER NOT NULL DEFAULT 12")
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "enabled" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
@@ -307,7 +360,7 @@ def request_audience(request):
 def device_profile(device_id):
     with db_lock:
         row = db.execute(
-            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled FROM devices WHERE device_id = ?",
+            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled, scent_enabled, treat_daily_max, scent_daily_max FROM devices WHERE device_id = ?",
             (device_id,),
         ).fetchone()
     if row is None:
@@ -319,6 +372,9 @@ def device_profile(device_id):
             "echo_cancel": True,
             "noise_suppression": True,
             "treats": False,
+            "scent": False,
+            "treat_daily_max": 12,
+            "scent_daily_max": 12,
         }
     return {
         "nickname": row["nickname"] or "",
@@ -328,7 +384,47 @@ def device_profile(device_id):
         "echo_cancel": bool(row["echo_cancel"]),
         "noise_suppression": bool(row["noise_suppression"]),
         "treats": bool(row["treats_enabled"]),
+        "scent": bool(row["scent_enabled"]),
+        "treat_daily_max": int(row["treat_daily_max"]),
+        "scent_daily_max": int(row["scent_daily_max"]),
     }
+
+
+def like_pattern(value):
+    text = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "%" + text + "%"
+
+
+def record_audit(username, role, action, device_id="", nickname=None, subject="", detail=""):
+    try:
+        if nickname is None and device_id:
+            nickname = device_profile(device_id)["nickname"]
+        with db_lock:
+            db.execute(
+                """
+                INSERT INTO audit (at, username, role, action, device_id, nickname, subject, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(time.time()),
+                    (username or "")[:80],
+                    (role or "")[:20],
+                    (action or "")[:80],
+                    (device_id or "")[:80],
+                    (nickname or "")[:80],
+                    (subject or "")[:80],
+                    (detail or "")[:500],
+                ),
+            )
+            db.execute(
+                """
+                DELETE FROM audit
+                WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 10000)
+                """
+            )
+            db.commit()
+    except Exception:
+        log.exception("audit write failed")
 
 
 def remember_device(device_id):
@@ -348,6 +444,7 @@ def saved_device_ids():
 
 def device_record(device_id, info=None):
     profile = device_profile(device_id)
+    access = camera_access(device_id)
     info = info or {}
     return {
         "device_id": device_id,
@@ -358,6 +455,15 @@ def device_record(device_id, info=None):
         "echo_cancel": profile["echo_cancel"],
         "noise_suppression": profile["noise_suppression"],
         "treats": profile["treats"],
+        "scent": profile["scent"],
+        "open": access["open"],
+        "schedule_message": access["schedule_message"],
+        "treat_daily_max": access["treat_daily_max"],
+        "scent_daily_max": access["scent_daily_max"],
+        "treat_used": access["treat_used"],
+        "scent_used": access["scent_used"],
+        "treat_blocked": access["treat_blocked"],
+        "scent_blocked": access["scent_blocked"],
         "online": info.get("ws") is not None,
         "version": info.get("version") or "",
         "hw": info.get("hw") or "",
@@ -396,7 +502,280 @@ def clean_capture(body):
     echo_cancel = clean_flag(body.get("echo_cancel"), "echo cancellation")
     noise_suppression = clean_flag(body.get("noise_suppression"), "noise suppression")
     treats = clean_flag(body.get("treats"), "treat dispenser")
-    return nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats
+    scent = clean_flag(body.get("scent"), "scent")
+    return nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats, scent
+
+
+def hub_zone_name():
+    configured = (load_config().get("timezone") or "").strip()
+    if configured:
+        return configured
+    tzinfo = datetime.now().astimezone().tzinfo
+    return getattr(tzinfo, "key", "") or "Etc/UTC"
+
+
+def hub_zone():
+    try:
+        return ZoneInfo(hub_zone_name())
+    except ZoneInfoNotFoundError:
+        log.warning("unknown timezone %s", hub_zone_name())
+        return ZoneInfo("Etc/UTC")
+
+
+def hub_now():
+    return datetime.now(hub_zone())
+
+
+def parse_days(text):
+    days = set()
+    for part in (text or "").split(","):
+        part = part.strip()
+        if part == "":
+            continue
+        days.add(int(part))
+    return days
+
+
+def format_clock(minute):
+    if minute >= 1440:
+        return "end of day"
+    hour = minute // 60
+    suffix = "AM" if hour < 12 else "PM"
+    hour12 = hour % 12 or 12
+    return "%d:%02d %s" % (hour12, minute % 60, suffix)
+
+
+def format_when(moment):
+    local = moment.astimezone(hub_zone())
+    clock = format_clock(local.hour * 60 + local.minute)
+    return local.strftime("%A, %B ") + str(local.day) + local.strftime(", %Y") + " at " + clock + " " + (local.tzname() or "")
+
+
+def clock_to_min(value, label):
+    text = (value or "").strip()
+    match = re.fullmatch(r"(\d{2}):(\d{2})", text)
+    if match is None:
+        raise ValueError(label + " needs a time like 08:00")
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        raise ValueError(label + " needs a time like 08:00")
+    return hour * 60 + minute
+
+
+def intervals_starting(rule, day, zone):
+    if rule["repeat"] == "weekly":
+        if day.weekday() not in parse_days(rule["days"]):
+            return []
+    elif rule["repeat"] == "once":
+        if day.isoformat() != (rule.get("on_date") or ""):
+            return []
+    else:
+        return []
+    start_min = int(rule["start_min"])
+    end_min = int(rule["end_min"])
+    start = datetime(day.year, day.month, day.day, start_min // 60, start_min % 60, tzinfo=zone)
+    if end_min >= 1440:
+        end = datetime(day.year, day.month, day.day, tzinfo=zone) + timedelta(days=1)
+    elif end_min > start_min:
+        end = datetime(day.year, day.month, day.day, end_min // 60, end_min % 60, tzinfo=zone)
+    else:
+        next_day = day + timedelta(days=1)
+        end = datetime(next_day.year, next_day.month, next_day.day, end_min // 60, end_min % 60, tzinfo=zone)
+    return [(start, end)]
+
+
+def rule_covers(rule, moment):
+    zone = moment.tzinfo
+    day = moment.date()
+    for delta in (0, -1):
+        for start, end in intervals_starting(rule, day + timedelta(days=delta), zone):
+            if start <= moment < end:
+                return True
+    return False
+
+
+def rules_open(rules, moment):
+    if not rules:
+        return True
+    allows = [rule for rule in rules if rule["kind"] == "allow"]
+    denies = [rule for rule in rules if rule["kind"] == "deny"]
+    if allows and not any(rule_covers(rule, moment) for rule in allows):
+        return False
+    if any(rule_covers(rule, moment) for rule in denies):
+        return False
+    return True
+
+
+def next_open_at(rules, moment):
+    if rules_open(rules, moment):
+        return moment
+    zone = moment.tzinfo
+    start_day = moment.date() - timedelta(days=1)
+    candidates = []
+    for offset in range(62):
+        day = start_day + timedelta(days=offset)
+        for rule in rules:
+            for begin, end in intervals_starting(rule, day, zone):
+                if begin > moment:
+                    candidates.append(begin)
+                if end > moment:
+                    candidates.append(end)
+    for candidate in sorted(set(candidates)):
+        if rules_open(rules, candidate):
+            return candidate
+    return None
+
+
+def closed_message(name, rules, moment):
+    nxt = next_open_at(rules, moment)
+    if nxt is None:
+        return name + " is currently outside its operating windows. No operating window is scheduled."
+    return name + " is currently outside its operating windows. Check back at the start of the next one, " + format_when(nxt) + "."
+
+
+def window_label(rule):
+    action = "Can be used" if rule["kind"] == "allow" else "Cannot be used"
+    span = format_clock(int(rule["start_min"])) + "–" + format_clock(int(rule["end_min"]))
+    if rule["repeat"] == "weekly":
+        names = ", ".join(WEEKDAYS[day] for day in sorted(parse_days(rule["days"])))
+        return action + " · every week · " + names + " · " + span
+    return action + " · " + (rule.get("on_date") or "") + " · " + span
+
+
+def load_hour_rules(device_id):
+    with db_lock:
+        rows = db.execute(
+            "SELECT id, device_id, kind, repeat, days, start_min, end_min, on_date FROM hours WHERE device_id = ? ORDER BY id",
+            (device_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def usage_rows(device_id, feature):
+    now_ts = int(time.time())
+    with db_lock:
+        return db.execute(
+            "SELECT at FROM feature_uses WHERE device_id = ? AND feature = ? AND at >= ? ORDER BY at",
+            (device_id, feature, now_ts - 86400),
+        ).fetchall()
+
+
+def quota_message(feature, maximum, rows):
+    label = "Treat" if feature == "treat" else "Scent"
+    used = len(rows)
+    if maximum <= 0:
+        return label + " is limited to 0 times in 24 hours."
+    if used < maximum:
+        return ""
+    available = int(rows[0]["at"]) + 86400
+    when = format_when(datetime.fromtimestamp(available, hub_zone()))
+    return label + " has already been used " + str(maximum) + " times in the last 24 hours. The next one is available at " + when + "."
+
+
+def camera_access(device_id):
+    profile = device_profile(device_id)
+    rules = load_hour_rules(device_id)
+    now = hub_now()
+    open_now = rules_open(rules, now)
+    name = profile["nickname"] or device_id
+    message = "" if open_now else closed_message(name, rules, now)
+    treat_rows = usage_rows(device_id, "treat")
+    scent_rows = usage_rows(device_id, "scent")
+    treat_block = "" if open_now else message
+    scent_block = "" if open_now else message
+    if open_now:
+        treat_block = quota_message("treat", profile["treat_daily_max"], treat_rows)
+        scent_block = quota_message("scent", profile["scent_daily_max"], scent_rows)
+    return {
+        "open": open_now,
+        "schedule_message": message,
+        "treat_daily_max": profile["treat_daily_max"],
+        "scent_daily_max": profile["scent_daily_max"],
+        "treat_used": len(treat_rows),
+        "scent_used": len(scent_rows),
+        "treat_blocked": treat_block,
+        "scent_blocked": scent_block,
+    }
+
+
+def reserve_feature(device_id, feature, maximum, username):
+    now_ts = int(time.time())
+    with db_lock:
+        db.execute("DELETE FROM feature_uses WHERE at < ?", (now_ts - 2 * 86400,))
+        rows = db.execute(
+            "SELECT at FROM feature_uses WHERE device_id = ? AND feature = ? AND at >= ? ORDER BY at",
+            (device_id, feature, now_ts - 86400),
+        ).fetchall()
+        message = quota_message(feature, maximum, rows)
+        if message:
+            db.commit()
+            return message
+        db.execute(
+            "INSERT INTO feature_uses (device_id, feature, at, username) VALUES (?, ?, ?, ?)",
+            (device_id, feature, now_ts, username or ""),
+        )
+        db.commit()
+    return ""
+
+
+def clean_daily_max(value, label):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(label + " must be a whole number")
+    if number < 0 or number > 100:
+        raise ValueError(label + " must be from 0 through 100")
+    return number
+
+
+def known_device(device_id):
+    if device_id in devices:
+        return True
+    with db_lock:
+        row = db.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+    return row is not None
+
+
+def clean_window(body):
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id or not known_device(device_id):
+        raise ValueError("that camera is not on the hub")
+    kind = (body.get("kind") or "").strip()
+    if kind not in ("allow", "deny"):
+        raise ValueError("choose whether the camera can be used or cannot be used")
+    repeat = (body.get("repeat") or "").strip()
+    if repeat not in ("weekly", "once"):
+        raise ValueError("choose every week or one day")
+    start_min = clock_to_min(body.get("start"), "Start")
+    end_min = clock_to_min(body.get("end"), "End")
+    if start_min == end_min:
+        raise ValueError("the start and end need to be different. Use an earlier end to cross midnight")
+    if end_min == 23 * 60 + 59 and end_min > start_min:
+        end_min = 1440
+    days = ""
+    on_date = ""
+    if repeat == "weekly":
+        raw_days = body.get("days") or []
+        if not isinstance(raw_days, list) or not raw_days:
+            raise ValueError("choose at least one day")
+        picked = []
+        for item in raw_days:
+            try:
+                day = int(item)
+            except (TypeError, ValueError):
+                raise ValueError("choose a real day of the week")
+            if day < 0 or day > 6 or day in picked:
+                raise ValueError("choose a real day of the week")
+            picked.append(day)
+        days = ",".join(str(day) for day in sorted(picked))
+    else:
+        on_date = (body.get("on_date") or "").strip()
+        try:
+            datetime.strptime(on_date, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("choose the date for this window")
+    return device_id, kind, repeat, days, start_min, end_min, on_date
 
 
 def clean_flag(value, label):
@@ -467,6 +846,14 @@ async def end_call(call_id, reason):
     info = devices.get(call["device_id"])
     if info and info.get("call_id") == call_id:
         info["call_id"] = None
+    actor = user_by_id(call["user_id"])
+    record_audit(
+        call.get("username") or (actor["username"] if actor else ""),
+        call.get("role") or (actor["role"] if actor else ""),
+        "Call ended",
+        device_id=call["device_id"],
+        detail=reason,
+    )
     message = {"type": "hangup", "call_id": call_id, "reason": reason}
     await send_json(call.get("user_ws"), message)
     if info:
@@ -538,6 +925,24 @@ async def devices_page(request):
     return page("devices.html", "text/html")
 
 
+async def schedule_page(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPFound("/")
+    if user["role"] != "admin":
+        raise web.HTTPFound("/calls")
+    return page("schedule.html", "text/html")
+
+
+async def audit_page(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPFound("/")
+    if user["role"] != "admin":
+        raise web.HTTPFound("/calls")
+    return page("audit.html", "text/html")
+
+
 async def app_css(_request):
     return page("app.css", "text/css")
 
@@ -552,8 +957,11 @@ async def login(request):
     password = data.get("password") or ""
     row = user_by_name(username)
     if row is None or not check_password(password, row["password"]):
+        if username:
+            record_audit(username, "", "Sign-in failed", detail="wrong username or password")
         raise web.HTTPFound("/?error=1")
     if not account_open(row):
+        record_audit(row["username"], row["role"], "Sign-in failed", detail="account is off or expired")
         raise web.HTTPFound("/?error=2")
     token = secrets.token_urlsafe(32)
     expires = int(time.time()) + 14 * 24 * 3600
@@ -563,6 +971,7 @@ async def login(request):
             (token, row["id"], expires),
         )
         db.commit()
+    record_audit(row["username"], row["role"], "Signed in")
     response = web.HTTPFound("/calls")
     response.set_cookie(
         "sid", token, max_age=14 * 24 * 3600, httponly=True, secure=True, samesite="Lax"
@@ -571,11 +980,14 @@ async def login(request):
 
 
 async def logout(request):
+    user = request_user(request)
     token = request.cookies.get("sid")
     if token:
         with db_lock:
             db.execute("DELETE FROM sessions WHERE token = ?", (token,))
             db.commit()
+    if user is not None:
+        record_audit(user["username"], user["role"], "Signed out")
     response = web.HTTPFound("/")
     response.del_cookie("sid")
     return response
@@ -658,6 +1070,13 @@ async def api_create_user(request):
         raise web.HTTPConflict(text="that username already exists")
     if device_ids:
         replace_assignments(created["id"], device_ids)
+    record_audit(
+        user["username"],
+        user["role"],
+        "Created account",
+        subject=username,
+        detail="role " + role + (", cameras " + ", ".join(device_ids) if device_ids else ""),
+    )
     await push_devices()
     return web.json_response({"ok": True})
 
@@ -678,6 +1097,7 @@ async def api_assign(request):
             raise web.HTTPBadRequest(text=str(exc))
         replace_assignments(target["id"], device_ids)
         log.info("access for %s set to %s", username, ",".join(device_ids) or "(none)")
+        detail = ", ".join(device_ids) or "no cameras"
     else:
         device_id = (body.get("device_id") or "").strip()
         if not device_id:
@@ -692,6 +1112,14 @@ async def api_assign(request):
                 (target["id"], device_ids[0]),
             )
             db.commit()
+        detail = "added " + device_ids[0]
+    record_audit(
+        user["username"],
+        user["role"],
+        "Changed camera access",
+        subject=username,
+        detail=detail,
+    )
     await push_devices()
     return web.json_response({"ok": True})
 
@@ -738,6 +1166,17 @@ async def api_account(request):
             db.execute("DELETE FROM sessions WHERE user_id = ?", (target["id"],))
         db.commit()
     log.info("account %s enabled %s expires %s", username, enabled, expires_at or "never")
+    if expires_at is None:
+        when = "no expiration"
+    else:
+        when = "expires " + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(expires_at)))
+    record_audit(
+        user["username"],
+        user["role"],
+        "Updated account",
+        subject=username,
+        detail=("on" if enabled else "off") + ", " + when,
+    )
     return web.json_response({"ok": True})
 
 
@@ -767,6 +1206,12 @@ async def api_settings_save(request):
     cfg["public_host"] = public_host
     save_config(cfg)
     log.info("external address set to %s", public_host or "(none)")
+    record_audit(
+        user["username"],
+        user["role"],
+        "Saved the external address",
+        detail=public_host or "(cleared)",
+    )
     return web.json_response({"ok": True, "public_host": public_host})
 
 
@@ -779,16 +1224,16 @@ async def api_device_save(request):
     if not device_id:
         raise web.HTTPBadRequest(text="device_id is required")
     try:
-        nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats = clean_capture(body)
+        nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats, scent = clean_capture(body)
     except ValueError as exc:
         raise web.HTTPBadRequest(text=str(exc))
     with db_lock:
         db.execute(
             """
             INSERT INTO devices (
-                device_id, nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled
+                device_id, nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled, scent_enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(device_id) DO UPDATE SET
                 nickname = excluded.nickname,
                 width = excluded.width,
@@ -796,7 +1241,8 @@ async def api_device_save(request):
                 frame_rate = excluded.frame_rate,
                 echo_cancel = excluded.echo_cancel,
                 noise_suppression = excluded.noise_suppression,
-                treats_enabled = excluded.treats_enabled
+                treats_enabled = excluded.treats_enabled,
+                scent_enabled = excluded.scent_enabled
             """,
             (
                 device_id,
@@ -807,11 +1253,12 @@ async def api_device_save(request):
                 int(echo_cancel),
                 int(noise_suppression),
                 int(treats),
+                int(scent),
             ),
         )
         db.commit()
     log.info(
-        "camera %s set to %sx%s @ %s echo %s noise %s treats %s",
+        "camera %s set to %sx%s @ %s echo %s noise %s treats %s scent %s",
         device_id,
         width,
         height,
@@ -819,6 +1266,24 @@ async def api_device_save(request):
         echo_cancel,
         noise_suppression,
         treats,
+        scent,
+    )
+    record_audit(
+        user["username"],
+        user["role"],
+        "Saved camera settings",
+        device_id=device_id,
+        nickname=nickname,
+        detail="%sx%s @ %s, echo %s, noise %s, treats %s, scent %s"
+        % (
+            width,
+            height,
+            frame_rate,
+            "on" if echo_cancel else "off",
+            "on" if noise_suppression else "off",
+            "on" if treats else "off",
+            "on" if scent else "off",
+        ),
     )
     info = devices.get(device_id)
     if info is not None:
@@ -835,17 +1300,28 @@ async def api_device_remove(request):
     device_id = (body.get("device_id") or "").strip()
     if not device_id:
         raise web.HTTPBadRequest(text="device_id is required")
+    nickname = device_profile(device_id)["nickname"]
     info = devices.get(device_id)
     if info and info.get("call_id"):
         await end_call(info["call_id"], "device removed")
     with db_lock:
         db.execute("DELETE FROM assignments WHERE device_id = ?", (device_id,))
+        db.execute("DELETE FROM hours WHERE device_id = ?", (device_id,))
+        db.execute("DELETE FROM feature_uses WHERE device_id = ?", (device_id,))
         db.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
         db.commit()
     still_online = info is not None and info.get("ws") is not None and not info["ws"].closed
     if not still_online:
         devices.pop(device_id, None)
     log.info("device %s removed online %s", device_id, still_online)
+    record_audit(
+        user["username"],
+        user["role"],
+        "Removed a camera",
+        device_id=device_id,
+        nickname=nickname,
+        detail="still connected" if still_online else "offline",
+    )
     await push_devices()
     return web.json_response({"ok": True, "still_online": still_online})
 
@@ -862,15 +1338,59 @@ async def api_treat(request):
         raise web.HTTPForbidden(text="you cannot use that camera")
     if not device_profile(device_id)["treats"]:
         raise web.HTTPBadRequest(text="treats are turned off for this camera")
+    access = camera_access(device_id)
+    if not access["open"]:
+        record_audit(user["username"], user["role"], "Treat refused", device_id=device_id, detail="outside operating hours")
+        raise web.HTTPBadRequest(text=access["schedule_message"])
     info = devices.get(device_id)
     if info is None or info.get("ws") is None or info["ws"].closed:
         raise web.HTTPBadRequest(text="that camera is offline")
     now = time.time()
     if now - treat_sent_at.get(device_id, 0) < 3:
         raise web.HTTPBadRequest(text="wait a moment before another treat")
+    limited = reserve_feature(device_id, "treat", access["treat_daily_max"], user["username"])
+    if limited:
+        record_audit(user["username"], user["role"], "Treat refused", device_id=device_id, detail="daily limit")
+        raise web.HTTPBadRequest(text=limited)
     treat_sent_at[device_id] = now
     await send_json(info.get("ws"), {"type": "treat"})
     log.info("treat %s by %s", device_id, user["username"])
+    record_audit(user["username"], user["role"], "Dispensed a treat", device_id=device_id)
+    await push_devices()
+    return web.json_response({"ok": True})
+
+
+async def api_scent(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPUnauthorized()
+    body = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    if not device_id:
+        raise web.HTTPBadRequest(text="device_id is required")
+    if not can_use_device(user, device_id):
+        raise web.HTTPForbidden(text="you cannot use that camera")
+    if not device_profile(device_id)["scent"]:
+        raise web.HTTPBadRequest(text="scent is turned off for this camera")
+    access = camera_access(device_id)
+    if not access["open"]:
+        record_audit(user["username"], user["role"], "Scent refused", device_id=device_id, detail="outside operating hours")
+        raise web.HTTPBadRequest(text=access["schedule_message"])
+    info = devices.get(device_id)
+    if info is None or info.get("ws") is None or info["ws"].closed:
+        raise web.HTTPBadRequest(text="that camera is offline")
+    now = time.time()
+    if now - scent_sent_at.get(device_id, 0) < SCENT_SECONDS:
+        raise web.HTTPBadRequest(text="wait a moment before another scent")
+    limited = reserve_feature(device_id, "scent", access["scent_daily_max"], user["username"])
+    if limited:
+        record_audit(user["username"], user["role"], "Scent refused", device_id=device_id, detail="daily limit")
+        raise web.HTTPBadRequest(text=limited)
+    scent_sent_at[device_id] = now
+    await send_json(info.get("ws"), {"type": "scent", "seconds": SCENT_SECONDS})
+    log.info("scent %s by %s", device_id, user["username"])
+    record_audit(user["username"], user["role"], "Released scent", device_id=device_id, detail="%s seconds" % SCENT_SECONDS)
+    await push_devices()
     return web.json_response({"ok": True})
 
 
@@ -1046,19 +1566,24 @@ async def api_device_deploy(request):
     try:
         ip = private_ipv4(body.get("ip"))
     except ValueError as exc:
+        record_audit(user["username"], user["role"], "Camera setup failed", detail=str(exc))
         raise web.HTTPBadRequest(text=str(exc))
     hub_ip = (load_config().get("lan_ip") or "").strip()
     try:
         private_ipv4(hub_ip)
     except ValueError:
+        record_audit(user["username"], user["role"], "Camera setup failed", detail="hub has no home-network address")
         raise web.HTTPBadRequest(text="the hub does not have a home-network address saved")
     try:
         detail = await asyncio.get_running_loop().run_in_executor(None, deploy_device, ip, hub_ip)
     except subprocess.TimeoutExpired:
         log.warning("device deploy %s timed out", ip)
+        record_audit(user["username"], user["role"], "Camera setup failed", subject=ip, detail="timed out")
         raise web.HTTPGatewayTimeout(text="the camera did not finish within two minutes")
     except ValueError as exc:
+        record_audit(user["username"], user["role"], "Camera setup failed", subject=ip, detail=str(exc))
         raise web.HTTPBadRequest(text=str(exc))
+    record_audit(user["username"], user["role"], "Deployed camera setup", subject=ip, detail=detail)
     return web.json_response({"ok": True, "detail": detail})
 
 
@@ -1081,11 +1606,21 @@ async def api_password(request):
         user_id = target["id"]
         drop_sessions = target_name != user["username"]
         log.info("password set for %s", target_name)
+        audit_action = "Set a password"
+        audit_subject = target_name
     else:
         current = user_by_name(user["username"])
         if not check_password(body.get("old") or "", current["password"]):
+            record_audit(
+                user["username"],
+                user["role"],
+                "Password change refused",
+                detail="current password was wrong",
+            )
             raise web.HTTPForbidden(text="current password is wrong")
         user_id = user["id"]
+        audit_action = "Changed own password"
+        audit_subject = ""
     with db_lock:
         db.execute(
             "UPDATE users SET password = ? WHERE id = ?",
@@ -1094,6 +1629,7 @@ async def api_password(request):
         if drop_sessions:
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         db.commit()
+    record_audit(user["username"], user["role"], audit_action, subject=audit_subject)
     return web.json_response({"ok": True})
 
 
@@ -1273,17 +1809,32 @@ async def user_loop(ws, user):
 async def start_call(ws, user, data):
     device_id = (data.get("device_id") or "").strip()
     if not can_use_device(user, device_id):
+        record_audit(user["username"], user["role"], "Call refused", device_id=device_id, detail="not allowed")
         await send_json(ws, {"type": "error", "message": "you cannot call that device"})
+        return
+    access = camera_access(device_id)
+    if not access["open"]:
+        record_audit(user["username"], user["role"], "Call refused", device_id=device_id, detail="outside operating hours")
+        await send_json(ws, {"type": "error", "message": access["schedule_message"]})
         return
     info = devices.get(device_id)
     if info is None or info.get("ws") is None or info["ws"].closed:
+        record_audit(user["username"], user["role"], "Call refused", device_id=device_id, detail="offline")
         await send_json(ws, {"type": "error", "message": "that device is offline"})
         return
     if info.get("call_id"):
+        record_audit(user["username"], user["role"], "Call refused", device_id=device_id, detail="already in a call")
         await send_json(ws, {"type": "error", "message": "that device is already in a call"})
         return
     call_id = uuid.uuid4().hex[:12]
-    calls[call_id] = {"device_id": device_id, "user_id": user["id"], "user_ws": ws}
+    calls[call_id] = {
+        "device_id": device_id,
+        "user_id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "user_ws": ws,
+    }
+    record_audit(user["username"], user["role"], "Started a call", device_id=device_id)
     info["call_id"] = call_id
     log.info("call %s user %s device %s", call_id, user["username"], device_id)
     await send_json(ws, {"type": "ringing", "call_id": call_id, "device_id": device_id})
@@ -1291,8 +1842,229 @@ async def start_call(ws, user, data):
     await push_devices()
 
 
+async def api_hours(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    cameras = device_snapshot(user)
+    for item in cameras:
+        rules = load_hour_rules(item["device_id"])
+        item["windows"] = [
+            {
+                "id": rule["id"],
+                "kind": rule["kind"],
+                "repeat": rule["repeat"],
+                "days": sorted(parse_days(rule["days"])),
+                "start_min": rule["start_min"],
+                "end_min": rule["end_min"],
+                "on_date": rule["on_date"],
+                "label": window_label(rule),
+            }
+            for rule in rules
+        ]
+    return web.json_response(
+        {"timezone": hub_zone_name(), "zones": list(HOUSE_ZONES), "cameras": cameras}
+    )
+
+
+async def api_hours_zone(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    name = (body.get("timezone") or "").strip()
+    if name not in HOUSE_ZONES:
+        raise web.HTTPBadRequest(text="choose a time zone from the list")
+    try:
+        ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        raise web.HTTPBadRequest(text="that time zone is not available on the hub")
+    cfg = load_config()
+    cfg["timezone"] = name
+    save_config(cfg)
+    record_audit(user["username"], user["role"], "Set the house time zone", detail=name)
+    await push_devices()
+    return web.json_response({"ok": True, "timezone": name})
+
+
+async def api_hours_add(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    try:
+        device_id, kind, repeat, days, start_min, end_min, on_date = clean_window(body)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    with db_lock:
+        cursor = db.execute(
+            """
+            INSERT INTO hours (device_id, kind, repeat, days, start_min, end_min, on_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (device_id, kind, repeat, days, start_min, end_min, on_date),
+        )
+        db.commit()
+        rule_id = cursor.lastrowid
+    rule = {
+        "kind": kind,
+        "repeat": repeat,
+        "days": days,
+        "start_min": start_min,
+        "end_min": end_min,
+        "on_date": on_date,
+    }
+    record_audit(
+        user["username"],
+        user["role"],
+        "Added an operating window",
+        device_id=device_id,
+        detail=window_label(rule),
+    )
+    await push_devices()
+    return web.json_response({"ok": True, "id": rule_id})
+
+
+async def api_hours_remove(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    try:
+        rule_id = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="that window was not found")
+    with db_lock:
+        row = db.execute(
+            "SELECT id, device_id, kind, repeat, days, start_min, end_min, on_date FROM hours WHERE id = ?",
+            (rule_id,),
+        ).fetchone()
+        if row is None:
+            raise web.HTTPBadRequest(text="that window was not found")
+        db.execute("DELETE FROM hours WHERE id = ?", (rule_id,))
+        db.commit()
+    record_audit(
+        user["username"],
+        user["role"],
+        "Removed an operating window",
+        device_id=row["device_id"],
+        detail=window_label(dict(row)),
+    )
+    await push_devices()
+    return web.json_response({"ok": True})
+
+
+async def api_hours_limits(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    device_id = (body.get("device_id") or "").strip()
+    if not known_device(device_id):
+        raise web.HTTPBadRequest(text="that camera is not on the hub")
+    try:
+        treat_max = clean_daily_max(body.get("treat_daily_max"), "Treat limit")
+        scent_max = clean_daily_max(body.get("scent_daily_max"), "Scent limit")
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    with db_lock:
+        db.execute(
+            "UPDATE devices SET treat_daily_max = ?, scent_daily_max = ? WHERE device_id = ?",
+            (treat_max, scent_max, device_id),
+        )
+        db.commit()
+    record_audit(
+        user["username"],
+        user["role"],
+        "Set daily limits",
+        device_id=device_id,
+        detail="treats %s, scent %s" % (treat_max, scent_max),
+    )
+    await push_devices()
+    return web.json_response({"ok": True})
+
+
+async def hours_loop():
+    previous = None
+    while True:
+        try:
+            current = {}
+            for device_id in saved_device_ids():
+                status = camera_access(device_id)
+                current[device_id] = (
+                    status["open"],
+                    status["schedule_message"],
+                    status["treat_blocked"],
+                    status["scent_blocked"],
+                )
+            if previous is not None and current != previous:
+                await push_devices()
+            previous = current
+        except Exception:
+            log.exception("hours check failed")
+        await asyncio.sleep(30)
+
+
+async def hours_watch(_app):
+    task = asyncio.create_task(hours_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def api_audit(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    username = (request.query.get("username") or "").strip()
+    device = (request.query.get("device") or "").strip()
+    try:
+        limit = int(request.query.get("limit") or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 200))
+    try:
+        before = int(request.query.get("before") or 0)
+    except (TypeError, ValueError):
+        before = 0
+    clauses = []
+    args = []
+    if before > 0:
+        clauses.append("id < ?")
+        args.append(before)
+    if username:
+        pattern = like_pattern(username)
+        clauses.append("(username LIKE ? ESCAPE '\\' OR subject LIKE ? ESCAPE '\\')")
+        args.extend([pattern, pattern])
+    if device:
+        pattern = like_pattern(device)
+        clauses.append(
+            """(
+                device_id LIKE ? ESCAPE '\\'
+                OR nickname LIKE ? ESCAPE '\\'
+                OR subject LIKE ? ESCAPE '\\'
+                OR device_id IN (
+                    SELECT device_id FROM devices WHERE nickname LIKE ? ESCAPE '\\'
+                )
+            )"""
+        )
+        args.extend([pattern, pattern, pattern, pattern])
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with db_lock:
+        rows = db.execute(
+            "SELECT id, at, username, role, action, device_id, nickname, subject, detail "
+            "FROM audit" + where + " ORDER BY id DESC LIMIT ?",
+            args + [limit],
+        ).fetchall()
+    return web.json_response({"entries": [dict(row) for row in rows]})
+
+
 def make_app():
     app = web.Application()
+    app.cleanup_ctx.append(hours_watch)
     app.add_routes(
         [
             web.get("/ping.json", ping),
@@ -1302,6 +2074,8 @@ def make_app():
             web.get("/calls", calls_page),
             web.get("/users", users_page),
             web.get("/devices", devices_page),
+            web.get("/audit", audit_page),
+            web.get("/schedule", schedule_page),
             web.get("/app.css", app_css),
             web.get("/common.js", common_js),
             web.post("/login", login),
@@ -1317,8 +2091,15 @@ def make_app():
             web.post("/api/device/remove", api_device_remove),
             web.post("/api/device/deploy", api_device_deploy),
             web.post("/api/treat", api_treat),
+            web.post("/api/scent", api_scent),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
+            web.get("/api/audit", api_audit),
+            web.get("/api/hours", api_hours),
+            web.post("/api/hours", api_hours_add),
+            web.post("/api/hours/remove", api_hours_remove),
+            web.post("/api/hours/limits", api_hours_limits),
+            web.post("/api/hours/timezone", api_hours_zone),
             web.get("/signal", signal),
         ]
     )

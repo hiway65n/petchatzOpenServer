@@ -108,7 +108,7 @@ The device id is the `device_id` query on the call page, and the id in that hub 
 
 `petchatz-ws` still has to receive `/ping` about every 5 seconds once the call page is up. The page in this repo does that. If you replace `hub/device.html` and drop that socket, the service will be restarted every 20 seconds. The board will stay up, and the kiosk's local commands will flap.
 
-Treats are sent from the call page on the device. When Devices has Treat dispenser on for that camera, the hub asks the page to send `/dispense/treat` on `wss://localhost`. Scent is still not sent.
+Treats are sent from the call page on the device. When Devices has Treat dispenser on for that camera, the hub asks the page to send `/dispense/treat` on `wss://localhost`. Scent uses the same path: `/settings/scentz?enabled=1`, `/settings/scentz?duration=10`, `/dispense/scent`, then `/stop_scent` after 10 seconds. The Scent checkbox starts off, and the button is hidden until it is saved on. Schedule can turn both buttons off outside an operating window, and each camera stops them after its 24-hour limit. That limit starts at 12.
 
 ## Leave these alone
 

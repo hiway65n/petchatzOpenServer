@@ -20,6 +20,7 @@ input, select { width: 100%; box-sizing: border-box; margin-bottom: 10px; backgr
 input[type="checkbox"] { width: 22px; height: 22px; margin: 0; flex: 0 0 auto; }
 input[type="datetime-local"] { color-scheme: dark; }
 button { background: #3d8bfd; color: white; cursor: pointer; min-height: 44px; }
+button:disabled { opacity: 0.45; cursor: default; }
 button.ghost { background: #3a4b5e; }
 button.warn { background: #c4494a; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -52,8 +53,8 @@ button.warn { background: #c4494a; }
 #local-preview {
   width: 120px; max-width: 30%; border-radius: 8px; background: #000; margin: 0 auto 8px;
 }
-#hangup, #treat { width: 100%; max-width: 280px; }
-#treat { margin-bottom: 8px; }
+#hangup, #treat, #scent { width: 100%; max-width: 280px; }
+#treat, #scent { margin-bottom: 8px; }
 .error { color: #ffb4b4; }
 .nav a.hidden, .hidden { display: none; }
 .cam-fields { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; align-items: end; }
@@ -65,12 +66,16 @@ button.warn { background: #c4494a; }
 .pass-row { display: flex; gap: 8px; align-items: center; }
 .pass-row input { margin: 0; flex: 1; min-width: 0; }
 .person-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.filters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+.filters button { margin-bottom: 10px; }
+.log-meta { color: #9aabbd; margin: 4px 0 0; font-size: 14px; }
+.log-detail { margin: 6px 0 0; }
 @media (max-width: 800px) {
   main { padding: 16px 12px 32px; }
   .nav .who { margin-left: 0; width: 100%; }
   .device { flex-direction: column; align-items: stretch; }
-      .device button, #hangup, #treat, .pass-row button { width: 100%; max-width: none; }
-  .cam-fields, .pass-row { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }
+      .device button, #hangup, #treat, #scent, .pass-row button { width: 100%; max-width: none; }
+  .cam-fields, .pass-row, .filters { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }
   body.in-call { background: #000; overflow: hidden; }
   body.in-call .nav, body.in-call #devices, body.in-call h1, body.in-call .sub { display: none; }
   body.in-call main { max-width: none; padding: 0; margin: 0; }

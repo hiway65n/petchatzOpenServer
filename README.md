@@ -4,7 +4,7 @@ I created this for some friends who have a bunch of these petchatz devices and w
 
 # PetChatz on-premises hub
 
-This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. An admin can call any device that is online. A normal user can call only the device assigned to them.
+This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. An admin can call any device that is online. A normal user can call only the cameras assigned to them.
 
 Calls work on the local network and, with a reverse proxy plus a direct TURN forward, from outside the house. Rough edges that are still open are listed in [docs/status.md](docs/status.md). Do not put live passwords, TURN credentials, private keys, or the hub database in git.
 
@@ -31,7 +31,9 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/login.html` | Sign-in page |
 | `hub/calls.html` | Call page for a person |
 | `hub/users.html` | Accounts, access, and expiration |
-| `hub/devices.html` | Camera settings, removal, treats, and one-step setup |
+| `hub/devices.html` | Camera settings, removal, treats, scent, and one-step setup |
+| `hub/schedule.html` | Operating hours and daily treat and scent limits |
+| `hub/audit.html` | Admin activity log, with username and camera filters |
 | `hub/device.html` | Page the device kiosk loads during a call |
 | `hub/petchatz-hub.service` | systemd unit |
 | `hub/config.example.json` | Shape of the config file created at install |

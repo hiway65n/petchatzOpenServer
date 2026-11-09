@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Activity · PetChatz</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <nav class="nav">
+      <a href="/calls">Calls</a>
+      <a href="/users">People</a>
+      <a href="/devices">Devices</a>
+      <a href="/schedule">Schedule</a>
+      <a class="here" href="/audit">Activity</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <p class="sub">Sign-ins, calls, treats, scent, and changes made from this hub. The username box matches the person who did it and the account they changed. The camera box matches an id, a name, or the address used for setup. The newest 10,000 entries are kept.</p>
+    <form id="filters" class="card">
+      <div class="filters">
+        <div>
+          <label for="filter-user">Username</label>
+          <input id="filter-user" name="username" autocomplete="off" placeholder="Anyone">
+        </div>
+        <div>
+          <label for="filter-device">Camera</label>
+          <input id="filter-device" name="device" autocomplete="off" placeholder="Name, id, or address">
+        </div>
+        <button type="submit">Show</button>
+      </div>
+      <button class="ghost" id="clear" type="button">Clear filters</button>
+    </form>
+    <div id="entries"></div>
+    <p id="empty" class="sub hidden">Nothing matches.</p>
+    <button class="ghost hidden" id="more" type="button">Show earlier</button>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    var oldest = 0;
+
+    function cameraText(entry) {
+      if (entry.nickname && entry.device_id) return entry.nickname + " (" + entry.device_id + ")";
+      return entry.nickname || entry.device_id || entry.subject || "";
+    }
+
+    function paint(entries, append) {
+      var box = document.getElementById("entries");
+      if (!append) box.textContent = "";
+      entries.forEach(function(entry) {
+        var card = document.createElement("section");
+        var head = document.createElement("div");
+        head.className = "person-head";
+        var title = document.createElement("strong");
+        title.textContent = entry.action;
+        var when = document.createElement("span");
+        when.className = "log-meta";
+        when.textContent = new Date(entry.at * 1000).toLocaleString();
+        head.appendChild(title);
+        head.appendChild(when);
+        card.appendChild(head);
+        var who = document.createElement("p");
+        who.className = "log-meta";
+        var whoText = entry.username || "Unknown";
+        if (entry.role) whoText += " (" + entry.role + ")";
+        var camera = cameraText(entry);
+        if (camera && camera !== entry.subject) whoText += " · " + camera;
+        else if (entry.subject && entry.username && entry.subject !== entry.username) whoText += " · " + entry.subject;
+        who.textContent = whoText;
+        card.appendChild(who);
+        if (entry.detail) {
+          var detail = document.createElement("p");
+          detail.className = "log-detail";
+          detail.textContent = entry.detail;
+          card.appendChild(detail);
+        }
+        box.appendChild(card);
+        oldest = entry.id;
+      });
+      var none = !append && !entries.length;
+      document.getElementById("empty").classList.toggle("hidden", !none);
+      document.getElementById("more").classList.toggle("hidden", entries.length < 100);
+    }
+
+    function query(before) {
+      var params = new URLSearchParams();
+      var username = document.getElementById("filter-user").value.trim();
+      var device = document.getElementById("filter-device").value.trim();
+      if (username) params.set("username", username);
+      if (device) params.set("device", device);
+      if (before) params.set("before", String(before));
+      return "/api/audit?" + params.toString();
+    }
+
+    function load(before) {
+      return fetch(query(before)).then(function(response) {
+        if (response.status === 403) {
+          location.href = "/calls";
+          return;
+        }
+        return response.json().then(function(body) {
+          paint(body.entries || [], !!before);
+        });
+      });
+    }
+
+    document.getElementById("filters").addEventListener("submit", function(event) {
+      event.preventDefault();
+      oldest = 0;
+      load(0);
+    });
+    document.getElementById("clear").addEventListener("click", function() {
+      document.getElementById("filter-user").value = "";
+      document.getElementById("filter-device").value = "";
+      oldest = 0;
+      load(0);
+    });
+    document.getElementById("more").addEventListener("click", function() {
+      if (oldest) load(oldest);
+    });
+
+    requireSession(true).then(function(user) {
+      if (user) load(0);
+    });
+  </script>
+</body>
+</html>

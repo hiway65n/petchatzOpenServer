@@ -13,6 +13,8 @@
       <a class="here" href="/calls">Calls</a>
       <a class="admin-only hidden" href="/users">People</a>
       <a class="admin-only hidden" href="/devices">Devices</a>
+      <a class="admin-only hidden" href="/schedule">Schedule</a>
+      <a class="admin-only hidden" href="/audit">Activity</a>
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>
@@ -26,6 +28,7 @@
         <p id="call-who"></p>
         <p id="call-state"></p>
         <button id="treat" class="ghost hidden" type="button">Treat</button>
+        <button id="scent" class="ghost hidden" type="button">Scent</button>
         <button id="hangup" class="warn" type="button">Hang up</button>
       </div>
     </div>
@@ -86,6 +89,7 @@
       callId = null;
       callDeviceId = "";
       show("treat", false);
+      show("scent", false);
       show("stage", false);
       setInCall(false);
     }
@@ -97,14 +101,25 @@
       return null;
     }
 
-    function showTreatFor(deviceId) {
+    function showCallExtras(deviceId) {
       var device = deviceById(deviceId);
+      var treat = document.getElementById("treat");
+      var scent = document.getElementById("scent");
       show("treat", !!(device && device.treats));
+      show("scent", !!(device && device.scent));
+      if (treat) {
+        treat.disabled = !!(device && device.treat_blocked);
+        treat.title = device && device.treat_blocked ? device.treat_blocked : "";
+      }
+      if (scent) {
+        scent.disabled = !!(device && device.scent_blocked);
+        scent.title = device && device.scent_blocked ? device.scent_blocked : "";
+      }
     }
 
-    function dispense(deviceId, button) {
+    function sendDeviceAction(url, deviceId, button, sentText, failText, holdMs) {
       if (button) button.disabled = true;
-      fetch("/api/treat", {
+      fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({device_id: deviceId})
@@ -112,16 +127,48 @@
         if (r.ok) {
           document.getElementById("call-error").textContent = "";
           if (document.body.classList.contains("in-call")) {
-            document.getElementById("call-state").textContent = "Treat sent";
+            document.getElementById("call-state").textContent = sentText;
           }
-          if (button) setTimeout(function() { button.disabled = false; }, 4000);
+          if (button) setTimeout(function() {
+            var current = deviceById(deviceId);
+            if (button.id === "treat") button.disabled = !!(current && current.treat_blocked);
+            else if (button.id === "scent") button.disabled = !!(current && current.scent_blocked);
+            else button.disabled = false;
+          }, holdMs);
           return;
         }
         r.text().then(function(text) {
-          document.getElementById("call-error").textContent = text || "Treat was not sent.";
+          document.getElementById("call-error").textContent = text || failText;
           if (button) button.disabled = false;
         });
       });
+    }
+
+    function dispense(deviceId, button) {
+      sendDeviceAction("/api/treat", deviceId, button, "Treat sent", "Treat was not sent.", 4000);
+    }
+
+    function releaseScent(deviceId, button) {
+      sendDeviceAction("/api/scent", deviceId, button, "Scent sent", "Scent was not sent.", 11000);
+    }
+
+    function featureNote(device, feature) {
+      var blocked = feature === "treat" ? device.treat_blocked : device.scent_blocked;
+      var text = "";
+      if (blocked && blocked !== device.schedule_message) text = blocked;
+      else if (!blocked) {
+        var used = feature === "treat" ? device.treat_used : device.scent_used;
+        var max = feature === "treat" ? device.treat_daily_max : device.scent_daily_max;
+        if (max == null) return null;
+        var left = max - used;
+        if (left < 0) left = 0;
+        text = (feature === "treat" ? "Treats" : "Scent") + " left in 24 hours: " + left + " of " + max;
+      }
+      if (!text) return null;
+      var note = document.createElement("p");
+      note.className = "sub";
+      note.textContent = text;
+      return note;
     }
 
     function renderDevices(list) {
@@ -151,9 +198,15 @@
         label.appendChild(title);
         label.appendChild(document.createElement("br"));
         label.appendChild(detail);
+        if (device.schedule_message) {
+          var closed = document.createElement("p");
+          closed.className = "error";
+          closed.textContent = device.schedule_message;
+          label.appendChild(closed);
+        }
         var button = document.createElement("button");
         button.textContent = "Call";
-        button.disabled = !device.online || device.in_call;
+        button.disabled = !device.online || device.in_call || device.open === false;
         button.onclick = function() {
           remoteEl.muted = true;
           remoteEl.setAttribute("playsinline", "");
@@ -162,7 +215,7 @@
           document.getElementById("call-who").textContent = device.nickname || device.device_id;
           document.getElementById("call-state").textContent = "Starting";
           callDeviceId = device.device_id;
-          showTreatFor(device.device_id);
+          showCallExtras(device.device_id);
           show("stage", true);
           setInCall(true);
           placeCall(device, button);
@@ -173,8 +226,23 @@
           var treat = document.createElement("button");
           treat.className = "ghost";
           treat.textContent = "Treat";
+          treat.disabled = !!device.treat_blocked;
+          treat.title = device.treat_blocked || "";
           treat.onclick = function() { dispense(device.device_id, treat); };
           card.appendChild(treat);
+          var treatNote = featureNote(device, "treat");
+          if (treatNote) card.appendChild(treatNote);
+        }
+        if (device.scent) {
+          var scent = document.createElement("button");
+          scent.className = "ghost";
+          scent.textContent = "Scent";
+          scent.disabled = !!device.scent_blocked;
+          scent.title = device.scent_blocked || "";
+          scent.onclick = function() { releaseScent(device.device_id, scent); };
+          card.appendChild(scent);
+          var scentNote = featureNote(device, "scent");
+          if (scentNote) card.appendChild(scentNote);
         }
         box.appendChild(card);
       });
@@ -273,7 +341,7 @@
           if (data.iceServers) iceServers = data.iceServers;
           knownDevices = data.devices || [];
           renderDevices(knownDevices);
-          if (callDeviceId) showTreatFor(callDeviceId);
+          if (callDeviceId) showCallExtras(callDeviceId);
         } else if (data.type === "ringing") {
           callId = data.call_id;
           show("stage", true);
@@ -297,6 +365,9 @@
 
     document.getElementById("treat").onclick = function() {
       if (callDeviceId) dispense(callDeviceId, document.getElementById("treat"));
+    };
+    document.getElementById("scent").onclick = function() {
+      if (callDeviceId) releaseScent(callDeviceId, document.getElementById("scent"));
     };
 
     document.getElementById("hangup").onclick = function() {

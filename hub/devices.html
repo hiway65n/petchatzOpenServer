@@ -13,6 +13,8 @@
       <a href="/calls">Calls</a>
       <a href="/users">People</a>
       <a class="here" href="/devices">Devices</a>
+      <a href="/schedule">Schedule</a>
+      <a href="/audit">Activity</a>
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>
@@ -88,6 +90,7 @@
         checks.appendChild(checkField("Echo cancellation", "echo_cancel", device.echo_cancel !== false));
         checks.appendChild(checkField("Noise suppression", "noise_suppression", device.noise_suppression !== false));
         checks.appendChild(checkField("Treat dispenser", "treats", device.treats === true));
+        checks.appendChild(checkField("Scent", "scent", device.scent === true));
         form.appendChild(checks);
         var idLine = document.createElement("p");
         idLine.className = "sub";
@@ -116,6 +119,24 @@
           };
           form.appendChild(treat);
         }
+        if (device.scent) {
+          var scent = document.createElement("button");
+          scent.type = "button";
+          scent.className = "ghost";
+          scent.textContent = "Release scent";
+          scent.onclick = function() {
+            scent.disabled = true;
+            fetch("/api/scent", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({device_id: device.device_id})
+            }).then(function(r) {
+              say("admin-msg", r, "Scent sent to " + (device.nickname || device.device_id) + ".");
+              setTimeout(function() { scent.disabled = false; }, 11000);
+            });
+          };
+          form.appendChild(scent);
+        }
         form.onsubmit = function(event) {
           event.preventDefault();
           fetch("/api/device", {
@@ -129,7 +150,8 @@
               frame_rate: form.frame_rate.value,
               echo_cancel: form.echo_cancel.checked,
               noise_suppression: form.noise_suppression.checked,
-              treats: form.treats.checked
+              treats: form.treats.checked,
+              scent: form.scent.checked
             })
           }).then(function(r) {
             say("admin-msg", r, "Saved " + (form.nickname.value || device.device_id) + ".");

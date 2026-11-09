@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Schedule · PetChatz</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>PetChatz</h1>
+    <nav class="nav">
+      <a href="/calls">Calls</a>
+      <a href="/users">People</a>
+      <a href="/devices">Devices</a>
+      <a class="here" href="/schedule">Schedule</a>
+      <a href="/audit">Activity</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <p class="sub">Choose when each camera can be used. With no windows, it can be used any time. After you add a “can be used” window, it is available only during those times. A “cannot be used” window blocks the camera even inside an open one. People who can call that camera see when the next open time starts. Treats and scent also stop outside those times, and each one can be used only so many times in 24 hours.</p>
+    <form id="zone" class="card">
+      <label for="zone-select">House time zone</label>
+      <select id="zone-select"></select>
+      <button class="ghost" type="submit">Save time zone</button>
+      <p id="zone-msg"></p>
+    </form>
+    <div id="cameras"></div>
+    <p id="admin-msg"></p>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    var DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+    function clockValue(minute) {
+      if (minute >= 1440) return "23:59";
+      var hour = Math.floor(minute / 60);
+      var min = minute % 60;
+      return (hour < 10 ? "0" : "") + hour + ":" + (min < 10 ? "0" : "") + min;
+    }
+
+    function checkedDays(box) {
+      var days = [];
+      var inputs = box.querySelectorAll("input");
+      for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].checked) days.push(parseInt(inputs[i].value, 10));
+      }
+      return days;
+    }
+
+    function render(body) {
+      var select = document.getElementById("zone-select");
+      select.textContent = "";
+      var zones = body.zones || [];
+      if (zones.indexOf(body.timezone) === -1) zones = [body.timezone].concat(zones);
+      zones.forEach(function(name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = name === "Etc/UTC" ? "UTC" : name.replace("_", " ");
+        if (name === body.timezone) option.selected = true;
+        select.appendChild(option);
+      });
+      var list = document.getElementById("cameras");
+      list.textContent = "";
+      var cameras = body.cameras || [];
+      if (!cameras.length) {
+        list.innerHTML = "<div class='card'>No cameras have connected yet.</div>";
+        return;
+      }
+      cameras.forEach(function(camera) {
+        var card = document.createElement("section");
+        card.className = "card";
+        var title = document.createElement("h2");
+        title.textContent = camera.nickname || camera.device_id;
+        card.appendChild(title);
+        var idLine = document.createElement("p");
+        idLine.className = "sub";
+        idLine.textContent = camera.device_id + (camera.open === false ? " · closed now" : " · open now");
+        card.appendChild(idLine);
+        if (camera.schedule_message) {
+          var closed = document.createElement("p");
+          closed.className = "error";
+          closed.textContent = camera.schedule_message;
+          card.appendChild(closed);
+        }
+
+        var limits = document.createElement("form");
+        limits.className = "cam-fields";
+        var treatLabel = document.createElement("label");
+        treatLabel.textContent = "Treats in 24 hours";
+        var treatInput = document.createElement("input");
+        treatInput.type = "number";
+        treatInput.min = "0";
+        treatInput.max = "100";
+        treatInput.value = camera.treat_daily_max == null ? 12 : camera.treat_daily_max;
+        var scentLabel = document.createElement("label");
+        scentLabel.textContent = "Scent in 24 hours";
+        var scentInput = document.createElement("input");
+        scentInput.type = "number";
+        scentInput.min = "0";
+        scentInput.max = "100";
+        scentInput.value = camera.scent_daily_max == null ? 12 : camera.scent_daily_max;
+        var saveLimits = document.createElement("button");
+        saveLimits.className = "ghost";
+        saveLimits.type = "submit";
+        saveLimits.textContent = "Save limits";
+        var treatWrap = document.createElement("div");
+        treatWrap.appendChild(treatLabel);
+        treatWrap.appendChild(treatInput);
+        var scentWrap = document.createElement("div");
+        scentWrap.appendChild(scentLabel);
+        scentWrap.appendChild(scentInput);
+        limits.appendChild(treatWrap);
+        limits.appendChild(scentWrap);
+        limits.appendChild(saveLimits);
+        limits.onsubmit = function(event) {
+          event.preventDefault();
+          fetch("/api/hours/limits", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              device_id: camera.device_id,
+              treat_daily_max: treatInput.value,
+              scent_daily_max: scentInput.value
+            })
+          }).then(function(r) {
+            say("admin-msg", r, "Saved limits for " + (camera.nickname || camera.device_id) + ".");
+            if (r.ok) load();
+          });
+        };
+        card.appendChild(limits);
+        var used = document.createElement("p");
+        used.className = "sub";
+        used.textContent = "Used in the last 24 hours: " + (camera.treat_used || 0) + " treats, " + (camera.scent_used || 0) + " scent.";
+        card.appendChild(used);
+
+        (camera.windows || []).forEach(function(windowRule) {
+          var row = document.createElement("div");
+          row.className = "row";
+          var text = document.createElement("span");
+          text.textContent = windowRule.label;
+          var remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "warn";
+          remove.textContent = "Remove";
+          remove.onclick = function() {
+            if (!window.confirm("Remove this window?")) return;
+            fetch("/api/hours/remove", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({id: windowRule.id})
+            }).then(function(r) {
+              say("admin-msg", r, "Removed the window.");
+              if (r.ok) load();
+            });
+          };
+          row.appendChild(text);
+          row.appendChild(remove);
+          card.appendChild(row);
+        });
+
+        var form = document.createElement("form");
+        var kind = document.createElement("select");
+        kind.innerHTML = "<option value='allow'>Can be used</option><option value='deny'>Cannot be used</option>";
+        var repeat = document.createElement("select");
+        repeat.innerHTML = "<option value='weekly'>Every week</option><option value='once'>One day</option>";
+        var days = document.createElement("div");
+        days.className = "checks";
+        DAY_NAMES.forEach(function(name, index) {
+          var label = document.createElement("label");
+          var input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = String(index);
+          label.appendChild(input);
+          label.appendChild(document.createTextNode(name));
+          days.appendChild(label);
+        });
+        var dateWrap = document.createElement("div");
+        dateWrap.className = "hidden";
+        var dateLabel = document.createElement("label");
+        dateLabel.textContent = "Date";
+        var dateInput = document.createElement("input");
+        dateInput.type = "date";
+        dateWrap.appendChild(dateLabel);
+        dateWrap.appendChild(dateInput);
+        var times = document.createElement("div");
+        times.className = "cam-fields";
+        function timeField(labelText, value) {
+          var wrap = document.createElement("div");
+          var label = document.createElement("label");
+          label.textContent = labelText;
+          var input = document.createElement("input");
+          input.type = "time";
+          input.required = true;
+          input.value = value;
+          wrap.appendChild(label);
+          wrap.appendChild(input);
+          return {wrap: wrap, input: input};
+        }
+        var start = timeField("Start", "08:00");
+        var end = timeField("End", "18:00");
+        var add = document.createElement("button");
+        add.type = "submit";
+        add.textContent = "Add window";
+        times.appendChild(start.wrap);
+        times.appendChild(end.wrap);
+        times.appendChild(add);
+        function syncRepeat() {
+          var weekly = repeat.value === "weekly";
+          days.classList.toggle("hidden", !weekly);
+          dateWrap.classList.toggle("hidden", weekly);
+        }
+        repeat.onchange = syncRepeat;
+        form.appendChild(kind);
+        form.appendChild(repeat);
+        form.appendChild(days);
+        form.appendChild(dateWrap);
+        form.appendChild(times);
+        form.onsubmit = function(event) {
+          event.preventDefault();
+          fetch("/api/hours", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              device_id: camera.device_id,
+              kind: kind.value,
+              repeat: repeat.value,
+              days: checkedDays(days),
+              start: start.input.value,
+              end: end.input.value,
+              on_date: dateInput.value
+            })
+          }).then(function(r) {
+            say("admin-msg", r, "Added the window.");
+            if (r.ok) load();
+          });
+        };
+        card.appendChild(form);
+        list.appendChild(card);
+      });
+    }
+
+    function load() {
+      return fetch("/api/hours").then(function(r) {
+        if (r.status === 403) {
+          location.href = "/calls";
+          return null;
+        }
+        return r.json().then(render);
+      });
+    }
+
+    document.getElementById("zone").onsubmit = function(event) {
+      event.preventDefault();
+      fetch("/api/hours/timezone", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({timezone: document.getElementById("zone-select").value})
+      }).then(function(r) {
+        say("zone-msg", r, "Saved the house time zone.");
+        if (r.ok) load();
+      });
+    };
+
+    requireSession(true).then(function(user) {
+      if (user) load();
+    });
+  </script>
+</body>
+</html>

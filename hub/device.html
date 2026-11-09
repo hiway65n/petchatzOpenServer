@@ -256,11 +256,31 @@
         } else {
           log("treat dispenser offline");
         }
+      } else if (data.type === "scent") {
+        if (localWs && localWs.readyState === 1) {
+          var seconds = parseInt(data.seconds, 10);
+          if (!seconds || seconds < 1) seconds = 10;
+          if (seconds > 30) seconds = 30;
+          localWs.send("/settings/scentz?enabled=1");
+          localWs.send("/settings/scentz?duration=" + seconds);
+          localWs.send("/dispense/scent");
+          log("scent dispense");
+          if (scentStop) clearTimeout(scentStop);
+          scentStop = setTimeout(function() {
+            if (localWs && localWs.readyState === 1) {
+              localWs.send("/stop_scent");
+              log("scent stop");
+            }
+          }, seconds * 1000);
+        } else {
+          log("scent offline");
+        }
       }
     }
 
     var localWs = null;
     var localPing = null;
+    var scentStop = null;
 
     function connectLocal() {
       if (localWs && (localWs.readyState === 0 || localWs.readyState === 1)) return;
@@ -287,7 +307,7 @@
       };
       localWs.onmessage = function(event) {
         var text = String(event.data || "");
-        if (text.indexOf("treat") !== -1) log("local " + text);
+        if (text.indexOf("treat") !== -1 || text.indexOf("scent") !== -1) log("local " + text);
       };
       localWs.onerror = function() {};
     }
