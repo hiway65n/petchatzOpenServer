@@ -49,7 +49,7 @@ Restarting the hub drops live calls. It does not reboot the device. If `device.h
 
 `hub/config.example.json` shows the keys only. Do not copy a live `config.json` into git. Leave `timezone` empty to use the hub's own clock. An admin can set a house time zone, such as `America/Chicago`, on the Schedule page. That value is what operating windows use.
 
-Metered, Cloudflare TURN, and a Cloudflare Tunnel are optional and are filled in on the Devices page. The installer does not download `cloudflared`. When a tunnel token is saved, the hub writes `/opt/petchatz-hub/tunnel.env` (mode 600, gitignored) and starts `petchatz-tunnel`. Clearing the token or switching back to a web address stops that service. It does not restart `petchatz.service` on a camera.
+Metered, Cloudflare TURN, and a Cloudflare Tunnel are optional and are filled in on the Devices page. The installer does not download `cloudflared`. When a tunnel token is saved, the hub writes `/opt/petchatz-hub/tunnel.token` (mode 600, gitignored). As a service starts `cloudflared.service`. Standalone starts `petchatz-tunnel`. Clearing the token or switching back to a web address stops the one this hub started. It does not restart `petchatz.service` on a camera.
 
 ## Firewall
 

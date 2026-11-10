@@ -3,6 +3,7 @@
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import ssl
 import subprocess
 import threading
 import time
+from contextvars import ContextVar
 import urllib.parse
 import urllib.request
 import uuid
@@ -143,7 +145,8 @@ def connect_db():
                 device_id TEXT NOT NULL DEFAULT '',
                 nickname TEXT NOT NULL DEFAULT '',
                 subject TEXT NOT NULL DEFAULT '',
-                detail TEXT NOT NULL DEFAULT ''
+                detail TEXT NOT NULL DEFAULT '',
+                remote TEXT NOT NULL DEFAULT ''
             );
             """
         )
@@ -165,6 +168,9 @@ def connect_db():
             db.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         if "expires_at" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN expires_at INTEGER")
+        audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit)")}
+        if "remote" not in audit_columns:
+            db.execute("ALTER TABLE audit ADD COLUMN remote TEXT NOT NULL DEFAULT ''")
         db.commit()
         count = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if count == 0:
@@ -494,15 +500,70 @@ def like_pattern(value):
     return "%" + text + "%"
 
 
-def record_audit(username, role, action, device_id="", nickname=None, subject="", detail=""):
+client_addr = ContextVar("client_addr", default="")
+
+
+def clean_ip(value):
+    text = (value or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    if not text or len(text) > 45:
+        return ""
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return ""
+    return text
+
+
+def peer_is_local(value):
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def client_ip(request):
+    """The address of the person, including through the house proxy or a tunnel.
+
+    A browser that reached the hub directly keeps the connection address. A
+    connection from this machine or another private address uses the visitor
+    address the proxy added.
+    """
+    peer = clean_ip(getattr(request, "remote", "") or "")
+    if not peer_is_local(peer):
+        return peer
+    for header in ("CF-Connecting-IP", "X-Real-IP", "X-Forwarded-For"):
+        raw = request.headers.get(header) or ""
+        if header == "X-Forwarded-For":
+            raw = raw.split(",")[0]
+        forwarded = clean_ip(raw)
+        if forwarded:
+            return forwarded
+    return peer
+
+
+@web.middleware
+async def remember_client(request, handler):
+    token = client_addr.set(client_ip(request))
+    try:
+        return await handler(request)
+    finally:
+        client_addr.reset(token)
+
+
+def record_audit(username, role, action, device_id="", nickname=None, subject="", detail="", remote=None):
     try:
         if nickname is None and device_id:
             nickname = device_profile(device_id)["nickname"]
+        if remote is None:
+            remote = client_addr.get()
         with db_lock:
             db.execute(
                 """
-                INSERT INTO audit (at, username, role, action, device_id, nickname, subject, detail)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO audit (at, username, role, action, device_id, nickname, subject, detail, remote)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(time.time()),
@@ -513,6 +574,7 @@ def record_audit(username, role, action, device_id="", nickname=None, subject=""
                     (nickname or "")[:80],
                     (subject or "")[:80],
                     (detail or "")[:500],
+                    (remote or "")[:45],
                 ),
             )
             db.execute(
@@ -1002,6 +1064,7 @@ async def end_call(call_id, reason):
         "Call ended",
         device_id=call["device_id"],
         detail=reason,
+        remote=call.get("remote") or "",
     )
     message = {"type": "hangup", "call_id": call_id, "reason": reason}
     await send_json(call.get("user_ws"), message)
@@ -1371,34 +1434,19 @@ def cloudflared_path():
     return shutil_which("cloudflared")
 
 
-def tunnel_unit(binary):
-    return """[Unit]
-Description=PetChatz Cloudflare Tunnel
-After=network-online.target
-
-[Service]
-EnvironmentFile=%s
-ExecStart=%s --no-autoupdate tunnel --protocol http2 run
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-""" % (os.path.join(BASE, "tunnel.env"), binary)
+def tunnel_run_mode(value):
+    return "service" if value == "service" else "standalone"
 
 
-def write_tunnel_env(token):
-    path = os.path.join(BASE, "tunnel.env")
-    temporary = path + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as fh:
-        fh.write("TUNNEL_TOKEN=%s\n" % token)
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+def tunnel_service_name(run_mode):
+    if tunnel_run_mode(run_mode) == "service":
+        return "cloudflared.service"
+    return "petchatz-tunnel.service"
 
 
-def tunnel_running():
+def unit_active(name):
     completed = subprocess.run(
-        ["systemctl", "is-active", "--quiet", "petchatz-tunnel.service"],
+        ["systemctl", "is-active", "--quiet", name],
         capture_output=True,
         text=True,
         timeout=10,
@@ -1407,44 +1455,120 @@ def tunnel_running():
     return completed.returncode == 0
 
 
-def apply_tunnel(mode, token):
+def stop_unit(name):
+    subprocess.run(
+        ["systemctl", "disable", "--now", name],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+
+def write_secret_file(path, text):
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def write_tunnel_token(token):
+    write_secret_file(os.path.join(BASE, "tunnel.token"), token + "\n")
+    write_secret_file(os.path.join(BASE, "tunnel.env"), "TUNNEL_TOKEN=%s\n" % token)
+
+
+def token_file_supported(binary):
+    completed = subprocess.run(
+        [binary, "tunnel", "run", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    return "--token-file" in ((completed.stdout or "") + (completed.stderr or ""))
+
+
+def tunnel_unit(binary, use_file):
+    token_path = os.path.join(BASE, "tunnel.token")
+    if use_file:
+        start = "%s --no-autoupdate tunnel --protocol http2 run --token-file %s" % (binary, token_path)
+        environment = ""
+    else:
+        start = "%s --no-autoupdate tunnel --protocol http2 run" % binary
+        environment = "EnvironmentFile=%s\n" % os.path.join(BASE, "tunnel.env")
+    return """[Unit]
+Description=Cloudflare Tunnel
+After=network-online.target
+
+[Service]
+TimeoutStartSec=0
+%sExecStart=%s
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+""" % (environment, start)
+
+
+def apply_tunnel(mode, token, run_mode):
+    run_mode = tunnel_run_mode(run_mode)
+    managed = os.path.join(BASE, "cloudflared-managed")
     binary = cloudflared_path()
     if mode != "tunnel" or not token:
-        subprocess.run(["systemctl", "disable", "--now", "petchatz-tunnel.service"], capture_output=True, text=True, timeout=20, check=False)
+        stop_unit("petchatz-tunnel.service")
+        if os.path.isfile(managed):
+            stop_unit("cloudflared.service")
+            os.remove(managed)
         return "The page tunnel is off."
     if not binary:
         return "The tunnel token is saved. Install cloudflared on the hub before it can start."
-    unit_path = "/etc/systemd/system/petchatz-tunnel.service"
-    with open(unit_path, "w", encoding="utf-8") as fh:
-        fh.write(tunnel_unit(binary))
-    write_tunnel_env(token)
+    write_tunnel_token(token)
+    use_file = token_file_supported(binary)
+    chosen = tunnel_service_name(run_mode)
+    other = "cloudflared.service" if chosen == "petchatz-tunnel.service" else "petchatz-tunnel.service"
+    with open("/etc/systemd/system/" + chosen, "w", encoding="utf-8") as fh:
+        fh.write(tunnel_unit(binary, use_file))
+    stop_unit(other)
+    if run_mode == "service":
+        write_secret_file(managed, "service\n")
+    elif os.path.isfile(managed):
+        os.remove(managed)
     subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True, timeout=20, check=False)
     completed = subprocess.run(
-        ["systemctl", "enable", "--now", "petchatz-tunnel.service"],
+        ["systemctl", "enable", "--now", chosen],
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
     )
-    subprocess.run(["systemctl", "restart", "petchatz-tunnel.service"], capture_output=True, text=True, timeout=30, check=False)
-    if not tunnel_running():
+    subprocess.run(["systemctl", "restart", chosen], capture_output=True, text=True, timeout=30, check=False)
+    if not unit_active(chosen):
         detail = (completed.stderr or completed.stdout or "").strip().splitlines()
         log.warning("tunnel did not start: %s", (detail[-1] if detail else "no output")[:200])
         return "The tunnel token is saved, but cloudflared did not stay running."
-    return "The Cloudflare Tunnel is running."
+    if run_mode == "service":
+        return "The Cloudflare Tunnel is running as a service."
+    return "The Cloudflare Tunnel is running standalone."
 
 
 def tunnel_note(cfg):
     mode = cfg.get("access_mode") or "hostname"
     token = cfg.get("tunnel_token") or ""
+    run_mode = tunnel_run_mode(cfg.get("tunnel_run"))
     if mode != "tunnel":
         return "The page tunnel is off."
     if not token:
         return "Tunnel mode is on. Add a token when you have one."
     if not cloudflared_path():
         return "The tunnel token is saved. Install cloudflared on the hub before it can start."
-    if tunnel_running():
-        return "The Cloudflare Tunnel is running."
+    if unit_active(tunnel_service_name(run_mode)):
+        if run_mode == "service":
+            return "The Cloudflare Tunnel is running as a service."
+        return "The Cloudflare Tunnel is running standalone."
+    if run_mode != "service" and unit_active("cloudflared.service"):
+        return "cloudflared.service is running. Choose As a service and save to use it."
     return "The tunnel token is saved, but cloudflared is not running."
 
 
@@ -1464,6 +1588,7 @@ def settings_view(cfg):
         "cloudflare_turn_token_last4": last4(cfg.get("cloudflare_turn_token")),
         "tunnel_token_set": bool(cfg.get("tunnel_token")),
         "tunnel_token_last4": last4(cfg.get("tunnel_token")),
+        "tunnel_run": tunnel_run_mode(cfg.get("tunnel_run")),
         "cloudflared_installed": bool(cloudflared_path()),
         "tunnel_status": tunnel_note(cfg),
     }
@@ -1507,8 +1632,11 @@ async def api_settings_save(request):
         raise web.HTTPBadRequest(text=str(exc))
     previous_mode = cfg.get("access_mode") or "hostname"
     previous_token = cfg.get("tunnel_token") or ""
+    previous_run = tunnel_run_mode(cfg.get("tunnel_run"))
+    run_mode = tunnel_run_mode(body.get("tunnel_run")) if "tunnel_run" in body else previous_run
     cfg["public_host"] = public_host
     cfg["access_mode"] = mode
+    cfg["tunnel_run"] = run_mode
     if "turn_local" in body:
         cfg["turn_local"] = bool(body.get("turn_local"))
     if "metered_enabled" in body:
@@ -1532,11 +1660,11 @@ async def api_settings_save(request):
     _relay_cache.clear()
     note = ""
     token_now = cfg.get("tunnel_token") or ""
-    changed = (previous_mode, previous_token) != (mode, token_now)
-    needs_start = mode == "tunnel" and bool(token_now) and not tunnel_running()
+    changed = (previous_mode, previous_token, previous_run) != (mode, token_now, run_mode)
+    needs_start = mode == "tunnel" and bool(token_now) and not unit_active(tunnel_service_name(run_mode))
     if changed or needs_start:
         try:
-            note = await asyncio.get_running_loop().run_in_executor(None, apply_tunnel, mode, token_now)
+            note = await asyncio.get_running_loop().run_in_executor(None, apply_tunnel, mode, token_now, run_mode)
         except (OSError, subprocess.TimeoutExpired):
             log.exception("tunnel update failed")
             note = "The settings were saved, but the tunnel could not be changed."
@@ -1591,7 +1719,7 @@ async def api_tunnel_install(request):
     if (cfg.get("access_mode") or "") == "tunnel" and cfg.get("tunnel_token"):
         try:
             notice = await asyncio.get_running_loop().run_in_executor(
-                None, apply_tunnel, "tunnel", cfg.get("tunnel_token") or ""
+                None, apply_tunnel, "tunnel", cfg.get("tunnel_token") or "", tunnel_run_mode(cfg.get("tunnel_run"))
             )
         except (OSError, subprocess.TimeoutExpired):
             notice = "cloudflared is installed, but the tunnel did not start."
@@ -2218,6 +2346,7 @@ async def start_call(ws, user, data):
         "username": user["username"],
         "role": user["role"],
         "user_ws": ws,
+        "remote": client_addr.get(),
     }
     record_audit(user["username"], user["role"], "Started a call", device_id=device_id)
     info["call_id"] = call_id
@@ -2447,7 +2576,7 @@ async def api_audit(request):
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with db_lock:
         rows = db.execute(
-            "SELECT id, at, username, role, action, device_id, nickname, subject, detail "
+            "SELECT id, at, username, role, action, device_id, nickname, subject, detail, remote "
             "FROM audit" + where + " ORDER BY id DESC LIMIT ?",
             args + [limit],
         ).fetchall()
@@ -2526,7 +2655,7 @@ async def screen_image(request):
 
 
 def make_app():
-    app = web.Application(client_max_size=2 * 1024 * 1024)
+    app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[remember_client])
     app.cleanup_ctx.append(hours_watch)
     app.add_routes(
         [

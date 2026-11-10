@@ -15,6 +15,7 @@
   "cloudflare_turn_key_id": "",
   "cloudflare_turn_token": "",
   "tunnel_token": "",
+  "tunnel_run": "standalone",
   "public_ip": "",
   "turn_min_port": 49160,
   "turn_max_port": 49200

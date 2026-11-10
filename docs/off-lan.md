@@ -75,7 +75,7 @@ Without a proxy, forward TCP 443 to the hub as well and accept the hub's self-si
 
 ## A tunnel instead of your own web address
 
-On Devices, under Outside the house, choose A Cloudflare Tunnel. The hostname is still the name people open, and it has to match what the browser sends. In the Cloudflare dashboard, send that hostname to `https://127.0.0.1:443` and turn on No TLS Verify. Paste the tunnel token on the Devices page. The hub stores it in `tunnel.env` and runs `cloudflared` as `petchatz-tunnel`, using HTTP/2 so the tunnel does not need outbound UDP. Install cloudflared from that same page if it is not already on the hub. Saving other settings does not download it.
+On Devices, under Outside the house, choose A Cloudflare Tunnel. The hostname is still the name people open, and it has to match what the browser sends. In the Cloudflare dashboard, send that hostname to `https://127.0.0.1:443` and turn on No TLS Verify. Paste the tunnel token on the Devices page. Choose As a service to use `cloudflared.service`, the same service `cloudflared service install` creates. Choose Standalone to run `cloudflared` as `petchatz-tunnel` instead. Saving a new token updates the one you picked and stops the other. The token is stored in a root-only file and is not placed on the command line. The tunnel uses HTTP/2 so it does not need outbound UDP. Install cloudflared from that same page if it is not already on the hub. Saving other settings does not download it.
 
 The tunnel replaces the inbound web-port forward. It does not replace TURN. A call still needs this hub's TURN ports, or Metered, or Cloudflare TURN.
 

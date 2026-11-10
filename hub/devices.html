@@ -28,6 +28,11 @@
       <label id="host-label" for="public-host-input">External address</label>
       <input id="public-host-input" name="public_host" placeholder="petchatz.example.net" autocomplete="off">
       <div id="tunnel-fields" class="hidden">
+        <label for="tunnel-run">How cloudflared runs</label>
+        <select id="tunnel-run">
+          <option value="service">As a service</option>
+          <option value="standalone">Standalone</option>
+        </select>
         <label for="tunnel-token">Tunnel token</label>
         <input id="tunnel-token" type="password" autocomplete="new-password">
         <p id="tunnel-note" class="sub"></p>
@@ -287,7 +292,7 @@
       document.getElementById("tunnel-fields").className = tunnel ? "" : "hidden";
       document.getElementById("host-label").textContent = tunnel ? "Tunnel hostname" : "External address";
       document.getElementById("outside-help").textContent = tunnel
-        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. The camera keeps using the address inside the house. This tunnel carries the page only. Calls still need a relay below."
+        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. As a service updates cloudflared.service, including one installed with cloudflared service install. Standalone runs cloudflared through this hub. Saving a new token restarts the one you pick and stops the other. This tunnel carries the page only. Calls still need a relay below."
         : "People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.";
     }
 
@@ -305,6 +310,7 @@
       document.getElementById("cf-token").value = "";
       document.getElementById("cf-clear").checked = false;
       document.getElementById("cf-note").textContent = savedNote(body.cloudflare_turn_token_set, body.cloudflare_turn_token_last4);
+      document.getElementById("tunnel-run").value = body.tunnel_run === "service" ? "service" : "standalone";
       document.getElementById("tunnel-token").value = "";
       document.getElementById("tunnel-clear").checked = false;
       document.getElementById("tunnel-note").textContent = savedNote(body.tunnel_token_set, body.tunnel_token_last4);
@@ -344,6 +350,7 @@
       event.preventDefault();
       var body = {
         access_mode: document.getElementById("access-mode").value,
+        tunnel_run: document.getElementById("tunnel-run").value,
         public_host: document.getElementById("public-host-input").value,
         turn_local: document.getElementById("turn-local").checked,
         metered_enabled: document.getElementById("metered-enabled").checked,

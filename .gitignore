@@ -15,5 +15,7 @@ turn.conf
 *.log
 known_hosts
 tunnel.env
+tunnel.token
+cloudflared-managed
 screen-ready.jpg
 screen-closed.jpg

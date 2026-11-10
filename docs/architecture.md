@@ -74,7 +74,7 @@ Passwords are stored as PBKDF2-HMAC-SHA256. The database lock is a re-entrant lo
 
 The `hours` table stores operating windows for a camera: `allow` or `deny`, `weekly` or `once`, the days or the date, and a start and end in minutes. No rows means the camera can be used any time. If any `allow` row exists, the camera is open only inside one of those, and a `deny` row closes it even then. Treat and scent use the same open check. `feature_uses` counts each successful treat or scent for 24 hours. `devices.treat_daily_max` and `scent_daily_max` default to 12. The house time zone is `timezone` in `config.json`. Until it is set, windows use the hub's own clock.
 
-The `audit` table records hub actions: who did it, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written.
+The `audit` table records hub actions: who did it, the address they connected from, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written.
 
 ## ICE
 
