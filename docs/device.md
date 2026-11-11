@@ -104,7 +104,7 @@ On the device, `uptime` should keep growing past five minutes, and `journalctl -
 
 The device id is the `device_id` query on the call page, and the id in that hub log line. It is twelve hex characters. Assign that id to a user when you create one.
 
-While nobody is in a call, the screen says Ready. Outside an operating window it says Out of service, and it returns to Ready when the window opens. A call that is already underway is left in place. On Devices, Camera screen can replace either of those with a JPEG used by every camera. 320 by 240 pixels matches the screen. Removing a picture returns that screen to the text. The camera is not told when the next window starts. People on the Calls page still see that time.
+While nobody is in a call, the screen says Ready. Outside an operating window it says Out of service, and it returns to Ready when the window opens. A call that is already underway is left in place. On Devices, Camera screen can replace either of those with a JPEG used by every camera. The panel is 320 by 240. The kiosk window is wider than that panel, so the picture is drawn at 320 by 240 instead of stretching to the window. A larger picture is scaled and cropped to that panel. Removing a picture returns that screen to the text. The camera is not told when the next window starts. People on the Calls page still see that time.
 
 ## What the drop-in does not change
 
@@ -120,6 +120,6 @@ Treats are sent from the call page on the device. When Devices has Treat dispens
 
 ## The unit that was checked
 
-Software `4.2.0rc1`, hostname `imx6dlpetchatz`, kernel `4.9.88-linux-anser`, about 512 MB RAM, Chromium 69 in a 320×240 kiosk. The certificate in `/opt/petchatz/` expired in 2016. The kiosk is started with certificate errors ignored. The hub still has to offer TLS 1.2, because this Chromium resets a TLS 1.3-only handshake.
+Software `4.2.0rc1`, hostname `imx6dlpetchatz`, kernel `4.9.88-linux-anser`, about 512 MB RAM, Chromium 69. The panel is 320×240. The kiosk window reports about 514×240, so the call page draws the picture and video at 320×240. The certificate in `/opt/petchatz/` expired in 2016. The kiosk is started with certificate errors ignored. The hub still has to offer TLS 1.2, because this Chromium resets a TLS 1.3-only handshake.
 
 The live call is the kiosk page. The native `/stream/webrtc-start-chat` and accept-user-offer commands are stubs.

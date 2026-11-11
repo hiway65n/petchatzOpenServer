@@ -14,7 +14,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - Treats can be turned on for one camera. They stay off until then.
 - Scent can be turned on for one camera. It stays off until then. One press runs the fan for about 10 seconds.
 - An admin can schedule when each camera can be used, including weekly and one-day windows, and a block inside an open window.
-- While nobody is in a call, the camera shows Ready, or Out of service when it is outside an operating window. An admin can replace either with a JPEG. The same two pictures are used on every camera. 320 by 240 matches the screen. With no picture, the text stays.
+- While nobody is in a call, the camera shows Ready, or Out of service when it is outside an operating window. An admin can replace either with a JPEG. The same two pictures are used on every camera. The panel is 320 by 240, and the picture is drawn at that size because the kiosk window is wider than the panel. With no picture, the text stays.
 - Treats and scent are limited per camera over 24 hours. The limit starts at 12 and can be changed. The buttons stay off outside an open window.
 - A two-way audio and video call between a desktop browser and the device kiosk.
 - Two different units on one hub, each with its own name, picture size, frame rate, and microphone processing.
