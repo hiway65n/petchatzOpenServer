@@ -9,7 +9,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - The device finds the hub, comes online, and stays registered.
 - Sign-in, separate Calls, People, Devices, Schedule, and Activity pages, and choosing which cameras each user can call.
 - An admin can filter hub actions by username and by camera name or id.
-- Accounts can be turned off or given an end time.
+- Accounts can be turned off or given an end time. An open Calls page for that account is closed.
 - An admin can send the watchdog change and the hub address to a camera from Devices.
 - Treats can be turned on for one camera. They stay off until then.
 - Scent can be turned on for one camera. It stays off until then. One press runs the fan for about 10 seconds.
@@ -22,7 +22,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 
 ## Works from outside the house
 
-- The call page and its web socket, through a reverse proxy such as Zoraxy, or through a Cloudflare Tunnel configured on Devices. See [off-lan.md](off-lan.md). The tunnel carries the page only.
+- The call page and its web socket, through a reverse proxy such as Zoraxy, or through a Cloudflare Tunnel configured on Devices. See [off-lan.md](off-lan.md). The hub can update a `cloudflared` it did not install, and it leaves only one copy running. The tunnel carries the page only.
 - The media relay, by forwarding TURN straight to the hub, or by turning on Metered or Cloudflare TURN on Devices. The proxy does not carry that UDP traffic. Both sides of a call receive the same cloud relay.
 
 ## Not done

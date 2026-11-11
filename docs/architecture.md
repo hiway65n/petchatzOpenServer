@@ -70,11 +70,13 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /screen/ready.jpg`, `GET /screen/closed.jpg` | The idle pictures, when an admin has saved them. The camera page loads these |
 | `GET /signal?role=device` or `role=user` | Web socket |
 
-Passwords are stored as PBKDF2-HMAC-SHA256. The database lock is a re-entrant lock. A plain lock deadlocked on startup because opening the database also inserted the first admin while holding the same lock.
+Passwords are stored as PBKDF2-HMAC-SHA256. `hub.db` is mode 600, including its journal files. The database lock is a re-entrant lock. A plain lock deadlocked on startup because opening the database also inserted the first admin while holding the same lock. Each message on a signed-in Calls socket checks that the account is still on and not expired. If it is not, the hub closes that socket and ends a call it owned. After several failed sign-ins from the same address, further attempts wait and skip the password check for about 10 minutes.
 
 The `hours` table stores operating windows for a camera: `allow` or `deny`, `weekly` or `once`, the days or the date, and a start and end in minutes. No rows means the camera can be used any time. If any `allow` row exists, the camera is open only inside one of those, and a `deny` row closes it even then. Treat and scent use the same open check. `feature_uses` counts each successful treat or scent for 24 hours. `devices.treat_daily_max` and `scent_daily_max` default to 12. The house time zone is `timezone` in `config.json`. Until it is set, windows use the hub's own clock.
 
 The `audit` table records hub actions: who did it, the address they connected from, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written.
+
+When Outside the house is a Cloudflare Tunnel, the hub runs one `cloudflared`. As a service rewrites `cloudflared.service` and restarts it, including a service created with `cloudflared service install`. Standalone rewrites `petchatz-tunnel` instead. Saving stops the other unit and any extra `cloudflared` process, then checks that one remains. Turning the tunnel off stops both. The token is in a root-only file and is not placed on the command line. See [off-lan.md](off-lan.md).
 
 ## ICE
 

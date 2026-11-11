@@ -292,7 +292,7 @@
       document.getElementById("tunnel-fields").className = tunnel ? "" : "hidden";
       document.getElementById("host-label").textContent = tunnel ? "Tunnel hostname" : "External address";
       document.getElementById("outside-help").textContent = tunnel
-        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. As a service updates cloudflared.service, including one installed with cloudflared service install. Standalone runs cloudflared through this hub. Saving a new token restarts the one you pick and stops the other. This tunnel carries the page only. Calls still need a relay below."
+        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. As a service updates cloudflared.service even if this hub did not install it. Standalone updates the hub's own copy. Saving stops the other so only one cloudflared is running. This tunnel carries the page only. Calls still need a relay below."
         : "People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.";
     }
 

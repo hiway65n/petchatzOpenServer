@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import sqlite3
 import ssl
 import subprocess
@@ -177,6 +178,14 @@ def connect_db():
             cfg = load_config()
             add_user(cfg["admin_user"], cfg["admin_pass"], "admin")
             log.info("created admin user %s", cfg["admin_user"])
+    protect_db()
+
+
+def protect_db():
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        path = DB_PATH + suffix
+        if os.path.exists(path):
+            os.chmod(path, 0o600)
 
 
 def hash_password(password, salt=None):
@@ -193,11 +202,47 @@ def check_password(password, stored):
     return secrets.compare_digest(digest.hex(), digest_hex)
 
 
-def add_user(username, password, role):
+async def hash_password_async(password):
+    return await asyncio.get_running_loop().run_in_executor(None, hash_password, password)
+
+
+async def check_password_async(password, stored):
+    return await asyncio.get_running_loop().run_in_executor(None, check_password, password, stored)
+
+
+LOGIN_WINDOW = 600
+LOGIN_LIMIT = 8
+login_failures = {}
+
+
+def too_many_logins(ip):
+    count, start = login_failures.get(ip or "", (0, 0))
+    return count >= LOGIN_LIMIT and time.monotonic() - start <= LOGIN_WINDOW
+
+
+def note_login_failure(ip):
+    key = ip or ""
+    now = time.monotonic()
+    count, start = login_failures.get(key, (0, now))
+    if now - start > LOGIN_WINDOW:
+        count, start = 0, now
+    login_failures[key] = (count + 1, start)
+    if len(login_failures) > 400:
+        expired = [item for item, (_, began) in login_failures.items() if now - began > LOGIN_WINDOW]
+        for item in expired:
+            login_failures.pop(item, None)
+
+
+def note_login_success(ip):
+    login_failures.pop(ip or "", None)
+
+
+def add_user(username, password, role, already_hashed=False):
+    stored = password if already_hashed else hash_password(password)
     with db_lock:
         db.execute(
             "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-            (username, hash_password(password), role),
+            (username, stored, role),
         )
         db.commit()
         return db.execute(
@@ -1167,14 +1212,22 @@ async def login(request):
     data = await request.post()
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
+    if too_many_logins(client_ip(request)):
+        await asyncio.sleep(2)
+        if username:
+            record_audit(username, "", "Sign-in failed", detail="too many attempts")
+        raise web.HTTPFound("/?error=1")
     row = user_by_name(username)
-    if row is None or not check_password(password, row["password"]):
+    password_ok = row is not None and await check_password_async(password, row["password"])
+    if not password_ok:
+        note_login_failure(client_ip(request))
         if username:
             record_audit(username, "", "Sign-in failed", detail="wrong username or password")
         raise web.HTTPFound("/?error=1")
     if not account_open(row):
         record_audit(row["username"], row["role"], "Sign-in failed", detail="account is off or expired")
         raise web.HTTPFound("/?error=2")
+    note_login_success(client_ip(request))
     token = secrets.token_urlsafe(32)
     expires = int(time.time()) + 14 * 24 * 3600
     with db_lock:
@@ -1277,7 +1330,7 @@ async def api_create_user(request):
             except ValueError as exc:
                 raise web.HTTPBadRequest(text=str(exc))
     try:
-        created = add_user(username, password, role)
+        created = add_user(username, await hash_password_async(password), role, already_hashed=True)
     except sqlite3.IntegrityError:
         raise web.HTTPConflict(text="that username already exists")
     if device_ids:
@@ -1336,6 +1389,13 @@ async def api_assign(request):
     return web.json_response({"ok": True})
 
 
+async def close_user_sockets(user_id):
+    sockets = list(user_sockets.get(user_id, ()))
+    for ws in sockets:
+        if not ws.closed:
+            await ws.close()
+
+
 async def api_account(request):
     user = request_user(request)
     if user is None or user["role"] != "admin":
@@ -1377,6 +1437,8 @@ async def api_account(request):
         if not still_open:
             db.execute("DELETE FROM sessions WHERE user_id = ?", (target["id"],))
         db.commit()
+    if not still_open:
+        await close_user_sockets(target["id"])
     log.info("account %s enabled %s expires %s", username, enabled, expires_at or "never")
     if expires_at is None:
         when = "no expiration"
@@ -1465,6 +1527,85 @@ def stop_unit(name):
     )
 
 
+def unit_main_pid(name):
+    completed = subprocess.run(
+        ["systemctl", "show", "-p", "MainPID", "--value", name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    try:
+        return int((completed.stdout or "0").strip() or "0")
+    except ValueError:
+        return 0
+
+
+def cloudflared_processes():
+    found = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return found
+    for name in entries:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/comm" % name, "r", encoding="utf-8", errors="replace") as fh:
+                comm = fh.read().strip()
+        except OSError:
+            continue
+        if comm == "cloudflared":
+            found.append(int(name))
+    return found
+
+
+def process_parent(pid):
+    try:
+        with open("/proc/%s/stat" % pid, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        fields = text[text.rfind(")") + 2:].split()
+        return int(fields[1])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def cloudflared_keep(main_pid):
+    keep = set()
+    if main_pid:
+        keep.add(main_pid)
+    changed = True
+    while changed:
+        changed = False
+        for pid in cloudflared_processes():
+            if pid in keep:
+                continue
+            if process_parent(pid) in keep:
+                keep.add(pid)
+                changed = True
+    return keep
+
+
+def stop_extra_cloudflared(main_pid):
+    keep = cloudflared_keep(main_pid)
+    extras = [pid for pid in cloudflared_processes() if pid not in keep]
+    for pid in extras:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    if not extras:
+        return
+    time.sleep(1)
+    keep = cloudflared_keep(main_pid)
+    for pid in cloudflared_processes():
+        if pid not in keep:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def write_secret_file(path, text):
     temporary = path + ".tmp"
     with open(temporary, "w", encoding="utf-8") as fh:
@@ -1518,9 +1659,10 @@ def apply_tunnel(mode, token, run_mode):
     binary = cloudflared_path()
     if mode != "tunnel" or not token:
         stop_unit("petchatz-tunnel.service")
+        stop_unit("cloudflared.service")
         if os.path.isfile(managed):
-            stop_unit("cloudflared.service")
             os.remove(managed)
+        stop_extra_cloudflared(0)
         return "The page tunnel is off."
     if not binary:
         return "The tunnel token is saved. Install cloudflared on the hub before it can start."
@@ -1548,6 +1690,10 @@ def apply_tunnel(mode, token, run_mode):
         detail = (completed.stderr or completed.stdout or "").strip().splitlines()
         log.warning("tunnel did not start: %s", (detail[-1] if detail else "no output")[:200])
         return "The tunnel token is saved, but cloudflared did not stay running."
+    stop_extra_cloudflared(unit_main_pid(chosen))
+    if len(cloudflared_processes()) != 1:
+        log.warning("cloudflared still has %s processes", len(cloudflared_processes()))
+        return "The tunnel was updated, but more than one cloudflared is still running."
     if run_mode == "service":
         return "The Cloudflare Tunnel is running as a service."
     return "The Cloudflare Tunnel is running standalone."
@@ -1563,12 +1709,18 @@ def tunnel_note(cfg):
         return "Tunnel mode is on. Add a token when you have one."
     if not cloudflared_path():
         return "The tunnel token is saved. Install cloudflared on the hub before it can start."
-    if unit_active(tunnel_service_name(run_mode)):
+    count = len(cloudflared_processes())
+    if count > 1:
+        return "More than one cloudflared is running. Save outside access to keep only the one you picked."
+    chosen = tunnel_service_name(run_mode)
+    if unit_active(chosen) and count == 1:
         if run_mode == "service":
             return "The Cloudflare Tunnel is running as a service."
         return "The Cloudflare Tunnel is running standalone."
     if run_mode != "service" and unit_active("cloudflared.service"):
-        return "cloudflared.service is running. Choose As a service and save to use it."
+        return "cloudflared.service is running. Choose As a service and save to update it."
+    if run_mode == "service" and unit_active("petchatz-tunnel.service"):
+        return "Standalone cloudflared is running. Choose Standalone and save to update it."
     return "The tunnel token is saved, but cloudflared is not running."
 
 
@@ -1661,8 +1813,16 @@ async def api_settings_save(request):
     note = ""
     token_now = cfg.get("tunnel_token") or ""
     changed = (previous_mode, previous_token, previous_run) != (mode, token_now, run_mode)
-    needs_start = mode == "tunnel" and bool(token_now) and not unit_active(tunnel_service_name(run_mode))
-    if changed or needs_start:
+    chosen_name = tunnel_service_name(run_mode)
+    other_name = "cloudflared.service" if chosen_name == "petchatz-tunnel.service" else "petchatz-tunnel.service"
+    too_many = mode == "tunnel" and bool(token_now) and len(cloudflared_processes()) > 1
+    needs_start = (
+        mode == "tunnel"
+        and bool(token_now)
+        and not unit_active(chosen_name)
+        and not unit_active(other_name)
+    )
+    if changed or needs_start or too_many:
         try:
             note = await asyncio.get_running_loop().run_in_executor(None, apply_tunnel, mode, token_now, run_mode)
         except (OSError, subprocess.TimeoutExpired):
@@ -2121,7 +2281,7 @@ async def api_password(request):
         audit_subject = target_name
     else:
         current = user_by_name(user["username"])
-        if not check_password(body.get("old") or "", current["password"]):
+        if not await check_password_async(body.get("old") or "", current["password"]):
             record_audit(
                 user["username"],
                 user["role"],
@@ -2132,10 +2292,11 @@ async def api_password(request):
         user_id = user["id"]
         audit_action = "Changed own password"
         audit_subject = ""
+    stored = await hash_password_async(new_password)
     with db_lock:
         db.execute(
             "UPDATE users SET password = ? WHERE id = ?",
-            (hash_password(new_password), user_id),
+            (stored, user_id),
         )
         if drop_sessions:
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
@@ -2285,6 +2446,17 @@ async def user_loop(ws, user):
         except json.JSONDecodeError:
             continue
         kind = data.get("type")
+        current = user_by_id(user["id"])
+        if not account_open(current):
+            record_audit(
+                user["username"],
+                user["role"],
+                "Signed out",
+                detail="account is off or expired",
+            )
+            await ws.close()
+            break
+        user = current
         if kind == "call":
             await start_call(ws, user, data)
         elif kind == "answer":
