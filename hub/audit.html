@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Activity · PetChatz</title>
+  <title>Activity · {{name}}</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <main>
-    <h1>PetChatz</h1>
+    <h1>{{name}}</h1>
     <nav class="nav">
       <a href="/calls">Calls</a>
       <a href="/users">People</a>
       <a href="/devices">Devices</a>
       <a href="/schedule">Schedule</a>
       <a class="here" href="/audit">Activity</a>
+      <a href="/settings">Settings</a>
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>

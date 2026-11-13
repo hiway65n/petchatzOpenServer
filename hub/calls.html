@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Calls · PetChatz</title>
+  <title>Calls · {{name}}</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <main>
-    <h1>PetChatz</h1>
+    <h1>{{name}}</h1>
     <nav class="nav">
       <a class="here" href="/calls">Calls</a>
       <a class="admin-only hidden" href="/users">People</a>
       <a class="admin-only hidden" href="/devices">Devices</a>
       <a class="admin-only hidden" href="/schedule">Schedule</a>
       <a class="admin-only hidden" href="/audit">Activity</a>
+      <a class="admin-only hidden" href="/settings">Settings</a>
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>
@@ -26,7 +27,13 @@
       <audio id="remote-audio" autoplay></audio>
       <div id="call-bar">
         <p id="call-who"></p>
+        <p id="call-timer"></p>
         <p id="call-state"></p>
+        <div class="call-controls">
+          <button id="mute-mic" class="ghost icon-btn" type="button">Mute mic</button>
+          <button id="mute-cam" class="ghost icon-btn" type="button">Camera off</button>
+          <label class="volume">Camera volume <input id="volume" type="range" min="0" max="100" value="100"></label>
+        </div>
         <button id="treat" class="ghost hidden" type="button">Treat</button>
         <button id="scent" class="ghost hidden" type="button">Scent</button>
         <button id="hangup" class="warn" type="button">Hang up</button>
@@ -46,6 +53,80 @@
     var callDeviceId = "";
     var remoteEl = document.getElementById("remote");
     var localEl = document.getElementById("local-preview");
+    var screenInfo = {ready: false, closed: false, rev: 0};
+    var micMuted = false;
+    var camOff = false;
+    var callStarted = 0;
+    var callTimer = null;
+    var ICONS = {
+      call: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M6.6 10.8a15 15 0 006.6 6.6l2.2-2.2a1 1 0 011-.2 11 11 0 003.6.6 1 1 0 011 1V20a1 1 0 01-1 1A17 17 0 013 4a1 1 0 011-1h3.5a1 1 0 011 1 11 11 0 00.6 3.6 1 1 0 01-.3 1L6.6 10.8z\"/></svg>",
+      hangup: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 8c-1.8 0-3.5.3-5 .9v2.4c0 .4-.2.7-.6.9a12 12 0 01-2.6 1.6c-.4.2-.8 0-1-.3L1.4 11.8a1 1 0 010-1.4A16 16 0 0112 6a16 16 0 0110.6 4.4 1 1 0 010 1.4l-1.4 1.7c-.2.3-.6.5-1 .3a12 12 0 01-2.6-1.6c-.4-.2-.6-.5-.6-.9V8.9A17 17 0 0012 8z\"/></svg>",
+      treat: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><g transform=\"rotate(-32 12 12)\"><rect x=\"6.4\" y=\"10.2\" width=\"11.2\" height=\"3.6\" rx=\"1.2\"/><circle cx=\"6.5\" cy=\"9.3\" r=\"2.2\"/><circle cx=\"6.5\" cy=\"14.7\" r=\"2.2\"/><circle cx=\"17.5\" cy=\"9.3\" r=\"2.2\"/><circle cx=\"17.5\" cy=\"14.7\" r=\"2.2\"/></g></svg>",
+      scent: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"1.9\"/><path d=\"M12 3.2c2.3 0 3.4 2.6 2.3 4.5-.7 1.2-1.5 2.1-2.3 2.1s-1.6-.9-2.3-2.1C8.6 5.8 9.7 3.2 12 3.2z\"/><path d=\"M12 20.8c-2.3 0-3.4-2.6-2.3-4.5.7-1.2 1.5-2.1 2.3-2.1s1.6.9 2.3 2.1c1.1 1.9 0 4.5-2.3 4.5z\"/><path d=\"M3.2 12c0-2.3 2.6-3.4 4.5-2.3 1.2.7 2.1 1.5 2.1 2.3s-.9 1.6-2.1 2.3C5.8 15.4 3.2 14.3 3.2 12z\"/><path d=\"M20.8 12c0 2.3-2.6 3.4-4.5 2.3-1.2-.7-2.1-1.5-2.1-2.3s.9-1.6 2.1-2.3c1.9-1.1 4.5 0 4.5 2.3z\"/></svg>",
+      mic: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 14a3 3 0 003-3V6a3 3 0 10-6 0v5a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11h-2z\"/></svg>",
+      cam: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M4 7h10a2 2 0 012 2v1.2l4-2.2v8l-4-2.2V15a2 2 0 01-2 2H4a2 2 0 01-2-2V9a2 2 0 012-2z\"/></svg>"
+    };
+
+    function paintIconButton(button, kind, label) {
+      if (!button) return;
+      button.classList.add("icon-btn");
+      button.innerHTML = ICONS[kind] + "<span class=\"btn-label\"></span>";
+      button.querySelector(".btn-label").textContent = label;
+    }
+
+    function applyVolume() {
+      var audio = document.getElementById("remote-audio");
+      var slider = document.getElementById("volume");
+      audio.volume = Number(slider.value) / 100;
+    }
+
+    function applyLocalToggles() {
+      var mic = document.getElementById("mute-mic");
+      var cam = document.getElementById("mute-cam");
+      var hasAudio = !!(localStream && localStream.getAudioTracks().length);
+      var hasVideo = !!(localStream && localStream.getVideoTracks().length);
+      if (localStream) {
+        localStream.getAudioTracks().forEach(function(track) { track.enabled = !micMuted; });
+        localStream.getVideoTracks().forEach(function(track) { track.enabled = !camOff; });
+      }
+      show("local-preview", hasVideo && !camOff);
+      if (hasVideo && !camOff && localEl.srcObject !== localStream) localEl.srcObject = localStream;
+      if (hasVideo && !camOff) {
+        var previewPlay = localEl.play();
+        if (previewPlay && previewPlay.catch) previewPlay.catch(function() {});
+      }
+      mic.disabled = !hasAudio;
+      cam.disabled = !hasVideo;
+      paintIconButton(mic, "mic", micMuted ? "Mic muted" : "Mute mic");
+      paintIconButton(cam, "cam", camOff ? "Camera is off" : "Camera off");
+      mic.classList.toggle("is-off", micMuted);
+      cam.classList.toggle("is-off", camOff);
+    }
+
+    function startCallTimer() {
+      if (callStarted) return;
+      callStarted = Date.now();
+      function tick() {
+        if (!callStarted) return;
+        var sec = Math.floor((Date.now() - callStarted) / 1000);
+        var h = Math.floor(sec / 3600);
+        var m = Math.floor((sec % 3600) / 60);
+        var s = sec % 60;
+        function pad(n) { return (n < 10 ? "0" : "") + n; }
+        document.getElementById("call-timer").textContent = h > 0
+          ? pad(h) + ":" + pad(m) + ":" + pad(s)
+          : pad(m) + ":" + pad(s);
+      }
+      tick();
+      callTimer = setInterval(tick, 1000);
+    }
+
+    function stopCallTimer() {
+      callStarted = 0;
+      if (callTimer) clearInterval(callTimer);
+      callTimer = null;
+      document.getElementById("call-timer").textContent = "";
+    }
 
     function capOutgoingVideo() {
       if (!pc || !pc.getSenders) return Promise.resolve();
@@ -88,6 +169,10 @@
       pendingIce = [];
       callId = null;
       callDeviceId = "";
+      micMuted = false;
+      camOff = false;
+      applyLocalToggles();
+      stopCallTimer();
       show("treat", false);
       show("scent", false);
       show("stage", false);
@@ -152,6 +237,40 @@
       sendDeviceAction("/api/scent", deviceId, button, "Scent sent", "Scent was not sent.", 11000);
     }
 
+    function cameraPanel(device) {
+      var panel = document.createElement("div");
+      panel.className = "panel";
+      var picture = "";
+      var words = "Ready for call";
+      if (!device.online) words = "Device Offline";
+      else if (device.open === false) {
+        words = "Device outside active hours";
+        if (screenInfo.closed) picture = "/screen/closed.jpg?v=" + screenInfo.rev;
+      } else if (screenInfo.ready) {
+        picture = "/screen/ready.jpg?v=" + screenInfo.rev;
+      }
+      if (picture) {
+        var image = document.createElement("img");
+        image.className = "panel-image";
+        image.alt = words;
+        image.src = picture;
+        image.onerror = function() {
+          panel.innerHTML = "";
+          var fallback = document.createElement("p");
+          fallback.className = "panel-label";
+          fallback.textContent = words;
+          panel.appendChild(fallback);
+        };
+        panel.appendChild(image);
+      } else {
+        var text = document.createElement("p");
+        text.className = "panel-label";
+        text.textContent = words;
+        panel.appendChild(text);
+      }
+      return panel;
+    }
+
     function featureNote(device, feature) {
       var blocked = feature === "treat" ? device.treat_blocked : device.scent_blocked;
       var text = "";
@@ -181,6 +300,7 @@
       list.forEach(function(device) {
         var card = document.createElement("div");
         card.className = "card device";
+        card.appendChild(cameraPanel(device));
         var label = document.createElement("div");
         var title = document.createElement("strong");
         title.textContent = device.nickname || device.device_id;
@@ -204,43 +324,54 @@
           closed.textContent = device.schedule_message;
           label.appendChild(closed);
         }
+        var actions = document.createElement("div");
+        actions.className = "device-actions";
         var button = document.createElement("button");
-        button.textContent = "Call";
+        paintIconButton(button, "call", "Call");
         button.disabled = !device.online || device.in_call || device.open === false;
         button.onclick = function() {
+          applyVolume();
           remoteEl.muted = true;
           remoteEl.setAttribute("playsinline", "");
           remoteEl.play().catch(function() {});
           document.getElementById("remote-audio").play().catch(function() {});
           document.getElementById("call-who").textContent = device.nickname || device.device_id;
           document.getElementById("call-state").textContent = "Starting";
+          micMuted = false;
+          camOff = false;
           callDeviceId = device.device_id;
           showCallExtras(device.device_id);
           show("stage", true);
           setInCall(true);
+          startCallTimer();
           placeCall(device, button);
         };
-        card.appendChild(label);
-        card.appendChild(button);
+        actions.appendChild(button);
         if (device.treats) {
           var treat = document.createElement("button");
           treat.className = "ghost";
-          treat.textContent = "Treat";
+          paintIconButton(treat, "treat", "Treat");
           treat.disabled = !!device.treat_blocked;
           treat.title = device.treat_blocked || "";
           treat.onclick = function() { dispense(device.device_id, treat); };
-          card.appendChild(treat);
-          var treatNote = featureNote(device, "treat");
-          if (treatNote) card.appendChild(treatNote);
+          actions.appendChild(treat);
         }
         if (device.scent) {
           var scent = document.createElement("button");
           scent.className = "ghost";
-          scent.textContent = "Scent";
+          paintIconButton(scent, "scent", "Scent");
           scent.disabled = !!device.scent_blocked;
           scent.title = device.scent_blocked || "";
           scent.onclick = function() { releaseScent(device.device_id, scent); };
-          card.appendChild(scent);
+          actions.appendChild(scent);
+        }
+        card.appendChild(label);
+        card.appendChild(actions);
+        if (device.treats) {
+          var treatNote = featureNote(device, "treat");
+          if (treatNote) card.appendChild(treatNote);
+        }
+        if (device.scent) {
           var scentNote = featureNote(device, "scent");
           if (scentNote) card.appendChild(scentNote);
         }
@@ -260,12 +391,8 @@
       }).catch(function() { return null; });
       media.then(function(stream) {
         localStream = stream;
-        if (stream && stream.getVideoTracks().length) {
-          localEl.srcObject = stream;
-          show("local-preview", true);
-          var previewPlay = localEl.play();
-          if (previewPlay && previewPlay.catch) previewPlay.catch(function() {});
-        }
+        if (stream && stream.getVideoTracks().length) localEl.srcObject = stream;
+        applyLocalToggles();
         send({type: "call", device_id: device.device_id});
       }).catch(function(err) {
         document.getElementById("call-error").textContent = String(err);
@@ -288,6 +415,7 @@
         if (event.track.kind === "audio") {
           var audio = document.getElementById("remote-audio");
           audio.srcObject = stream;
+          applyVolume();
           var audioPlay = audio.play();
           if (audioPlay && audioPlay.catch) audioPlay.catch(function() {});
         } else {
@@ -339,9 +467,13 @@
         var data = JSON.parse(event.data);
         if (data.type === "devices") {
           if (data.iceServers) iceServers = data.iceServers;
+          if (data.screen) screenInfo = data.screen;
           knownDevices = data.devices || [];
           renderDevices(knownDevices);
           if (callDeviceId) showCallExtras(callDeviceId);
+        } else if (data.type === "screen") {
+          screenInfo = data;
+          renderDevices(knownDevices);
         } else if (data.type === "ringing") {
           callId = data.call_id;
           show("stage", true);
@@ -369,6 +501,23 @@
     document.getElementById("scent").onclick = function() {
       if (callDeviceId) releaseScent(callDeviceId, document.getElementById("scent"));
     };
+    document.getElementById("mute-mic").onclick = function() {
+      if (!localStream || !localStream.getAudioTracks().length) return;
+      micMuted = !micMuted;
+      applyLocalToggles();
+    };
+    document.getElementById("mute-cam").onclick = function() {
+      if (!localStream || !localStream.getVideoTracks().length) return;
+      camOff = !camOff;
+      applyLocalToggles();
+    };
+    document.getElementById("volume").oninput = applyVolume;
+    paintIconButton(document.getElementById("treat"), "treat", "Treat");
+    paintIconButton(document.getElementById("scent"), "scent", "Scent");
+    paintIconButton(document.getElementById("hangup"), "hangup", "Hang up");
+    paintIconButton(document.getElementById("mute-mic"), "mic", "Mute mic");
+    paintIconButton(document.getElementById("mute-cam"), "cam", "Camera off");
+    applyVolume();
 
     document.getElementById("hangup").onclick = function() {
       if (callId) send({type: "hangup", call_id: callId});

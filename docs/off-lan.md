@@ -20,7 +20,7 @@ device on the LAN     -------------------------------- stays on the LAN --> :443
 
 Use Zoraxy for the page and the call socket only. Leave the TURN ports on a router forward straight to the hub. Zoraxy is an HTTP proxy, and the audio and video relay is UDP.
 
-On the hub, the external address is `public_host` in `/opt/petchatz-hub/config.json`. An admin can change it under Outside the house on the Devices page. These docs use `petchatz.example.net` for that name. Inside the house, keep opening `https://<lan-ip>/`. Away from home, open `https://petchatz.example.net/`.
+On the hub, the external address is `public_host` in `/opt/petchatz-hub/config.json`. An admin can change it on the Settings page. These docs use `petchatz.example.net` for that name. Inside the house, keep opening `https://<lan-ip>/`. Away from home, open `https://petchatz.example.net/`.
 
 Zoraxy proxy rule:
 
@@ -61,7 +61,7 @@ A self-signed certificate is generated for the LAN address and the current publi
    sudo ./deploy/enable-offlan.sh petchatz.example.net
    ```
 
-   An admin can change that name later under Outside the house on the Devices page. The device is not part of this step.
+   An admin can change that name later on the Settings page. The device is not part of this step.
 
 2. Point the DNS name at the house's public address, and create the Zoraxy rule in the section above. The upstream is the hub's LAN address. A 521 from Zoraxy means it cannot open that upstream. Pointing the rule at the public name loops out through the router and fails the same way. The TURN port forwards are a separate step and do not clear a 521.
 
@@ -75,13 +75,13 @@ Without a proxy, forward TCP 443 to the hub as well and accept the hub's self-si
 
 ## A tunnel instead of your own web address
 
-On Devices, under Outside the house, choose A Cloudflare Tunnel. The hostname is still the name people open, and it has to match what the browser sends. In the Cloudflare dashboard, send that hostname to `https://127.0.0.1:443` and turn on No TLS Verify. Paste the tunnel token on the Devices page. Choose As a service to use `cloudflared.service`, including one created earlier with `cloudflared service install`. Saving rewrites that service with the token on this page and restarts it. Choose Standalone to run one copy as `petchatz-tunnel` instead. Saving stops the copy you did not pick, then checks that only one `cloudflared` process is left. Turning the tunnel off stops both. The token is stored in a root-only file and is not placed on the command line. The tunnel uses HTTP/2 so it does not need outbound UDP. Install cloudflared from that same page if it is not already on the hub. Saving other settings does not download it.
+On Settings, choose A Cloudflare Tunnel. The hostname is still the name people open, and it has to match what the browser sends. In the Cloudflare dashboard, send that hostname to `https://127.0.0.1:443` and turn on No TLS Verify. Paste the tunnel token on the Settings page. Choose As a service to use `cloudflared.service`, including one created earlier with `cloudflared service install`. Saving rewrites that service with the token on this page and restarts it. Choose Standalone to run one copy as `petchatz-tunnel` instead. Saving stops the copy you did not pick, then checks that only one `cloudflared` process is left. Turning the tunnel off stops both. The token is stored in a root-only file and is not placed on the command line. The tunnel uses HTTP/2 so it does not need outbound UDP. Install cloudflared from that same page if it is not already on the hub. Saving other settings does not download it.
 
 The tunnel replaces the inbound web-port forward. It does not replace TURN. A call still needs this hub's TURN ports, or Metered, or Cloudflare TURN.
 
 ## Metered and Cloudflare TURN
 
-Call relay on the Devices page can use this hub, Metered Open Relay, Cloudflare TURN, or more than one. Leave this hub on for calls inside the house. Add one cloud relay when you do not want to forward the TURN ports. The camera and the browser must both receive that same relay, which the hub does. Host candidates still win a call that is already inside the house.
+Call relay on the Settings page can use this hub, Metered Open Relay, Cloudflare TURN, or more than one. Leave this hub on for calls inside the house. Add one cloud relay when you do not want to forward the TURN ports. The camera and the browser must both receive that same relay, which the hub does. Host candidates still win a call that is already inside the house.
 
 You can turn a service on and save before you have an account. Calls ignore it until a domain and key, or a Cloudflare key id and token, are saved. The page then shows the last four characters of each secret. The full value stays in `config.json` and is not written to the activity log. Credentials are cached for a while, so a call does not ask the provider again every time someone opens the page. A provider that cannot be reached is left out of the list. The other relays remain.
 

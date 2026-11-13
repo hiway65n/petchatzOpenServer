@@ -3,37 +3,58 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>People · PetChatz</title>
+  <title>People · {{name}}</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <main>
-    <h1>PetChatz</h1>
+    <h1>{{name}}</h1>
     <nav class="nav">
       <a href="/calls">Calls</a>
       <a class="here" href="/users">People</a>
       <a href="/devices">Devices</a>
       <a href="/schedule">Schedule</a>
       <a href="/audit">Activity</a>
+      <a href="/settings">Settings</a>
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>
-    <p class="sub">A user can call only the cameras you check. An admin can call every camera. Turning an account off, or setting an expiration that has passed, signs that person out.</p>
-    <form id="own-pass" class="card">
-      <h2>My password</h2>
-      <label>Current password</label>
-      <input name="old" type="password" autocomplete="current-password" required>
-      <label>New password</label>
-      <input name="new" type="password" autocomplete="new-password" required>
-      <button class="ghost" type="submit">Change my password</button>
-      <p id="pass-msg"></p>
+    <p class="sub">A user can call only the cameras you check. An admin can call every camera. Turning an account off, or setting an expiration that has passed, signs that person out. Delete removes an account. The account you are signed in with stays.</p>
+    <form id="guest-wizard" class="card">
+      <h2>Guest account</h2>
+      <p class="sub">Makes a sign-in for one camera, with a generated username and password, and a date when it stops. Settings can run a task that removes these guest accounts after that date. Accounts from New account are left in place.</p>
+      <button id="guest-start" type="button">Start</button>
+      <div id="guest-step-camera" class="hidden">
+        <label for="guest-camera">Camera</label>
+        <select id="guest-camera"></select>
+        <button id="guest-next-date" type="button">Next</button>
+      </div>
+      <div id="guest-step-date" class="hidden">
+        <label for="guest-date">Access ends</label>
+        <input id="guest-date" type="date">
+        <p class="sub">The account works through the end of this day, in the house time zone.</p>
+        <button id="guest-back-camera" class="ghost" type="button">Back</button>
+        <button id="guest-next-email" type="button">Next</button>
+      </div>
+      <div id="guest-step-email" class="hidden">
+        <label for="guest-email">Email, optional</label>
+        <input id="guest-email" type="email" autocomplete="off" placeholder="name@example.com">
+        <p class="sub">If you enter an address, and mail is set up on Settings, these instructions are emailed as well as shown here.</p>
+        <button id="guest-back-date" class="ghost" type="button">Back</button>
+        <button id="guest-create" type="button">Create and print</button>
+      </div>
+      <pre id="guest-slip" class="hidden"></pre>
+      <p id="guest-msg"></p>
     </form>
     <form id="create-user" class="card">
       <h2>New account</h2>
       <label>Username</label>
       <input name="username" autocomplete="off" required>
       <label>Password</label>
-      <input name="password" type="password" autocomplete="new-password" required>
+      <div class="pass-row">
+        <input name="password" type="password" autocomplete="new-password" required>
+        <button id="create-random" class="ghost" type="button">Random password</button>
+      </div>
       <label>Role</label>
       <select id="create-role" name="role">
         <option value="user">User</option>
@@ -47,10 +68,42 @@
     </form>
     <div id="people"></div>
     <p id="admin-msg"></p>
+    <form id="own-pass" class="card">
+      <h2>My password</h2>
+      <label>Current password</label>
+      <input name="old" type="password" autocomplete="current-password" required>
+      <label>New password</label>
+      <div class="pass-row">
+        <input id="own-new" name="new" type="password" autocomplete="new-password" required>
+        <button id="own-random" class="ghost" type="button">Random password</button>
+      </div>
+      <button class="ghost" type="submit">Change my password</button>
+      <p id="pass-msg"></p>
+    </form>
   </main>
   <script src="/common.js"></script>
   <script>
+    var signedIn = "";
     var knownDevices = [];
+
+    function randomPassword() {
+      var alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+      var bytes = new Uint8Array(8);
+      if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+      else {
+        for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+      }
+      var out = "";
+      for (var n = 0; n < bytes.length; n++) out += alphabet.charAt(bytes[n] % alphabet.length);
+      return out;
+    }
+
+    function fillRandomPassword(input) {
+      input.type = "text";
+      input.value = randomPassword();
+      input.focus();
+      if (input.select) input.select();
+    }
 
     function deviceTitle(device) {
       return device.nickname ? device.nickname + " (" + device.device_id + ")" : device.device_id;
@@ -132,7 +185,7 @@
         name.textContent = person.username;
         var role = document.createElement("span");
         role.className = "sub";
-        role.textContent = (person.role === "admin" ? "Admin" : "User") + " · " + accessText(person);
+        role.textContent = (person.role === "admin" ? "Admin" : (person.source === "wizard" ? "Guest" : "User")) + " · " + accessText(person) + (person.email ? " · " + person.email : "");
         head.appendChild(name);
         head.appendChild(role);
         card.appendChild(head);
@@ -170,28 +223,68 @@
         save.textContent = "Save";
         card.appendChild(save);
 
-        var passLabel = document.createElement("label");
-        passLabel.textContent = "New password";
-        var passRow = document.createElement("div");
-        passRow.className = "pass-row";
-        var pass = document.createElement("input");
-        pass.type = "password";
-        pass.autocomplete = "new-password";
-        pass.placeholder = "At least 6 characters";
-        var setPass = document.createElement("button");
-        setPass.className = "ghost";
-        setPass.type = "button";
-        setPass.textContent = "Set password";
-        pass.onkeydown = function(event) {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            setPass.click();
-          }
-        };
-        passRow.appendChild(pass);
-        passRow.appendChild(setPass);
-        card.appendChild(passLabel);
-        card.appendChild(passRow);
+        if (person.username !== signedIn) {
+          var remove = document.createElement("button");
+          remove.className = "ghost";
+          remove.type = "button";
+          remove.textContent = "Delete account";
+          remove.onclick = function() {
+            if (!window.confirm("Delete " + person.username + "? This cannot be undone.")) return;
+            fetch("/api/users/delete", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({username: person.username})
+            }).then(function(r) {
+              say("admin-msg", r, "Deleted " + person.username + ".");
+              if (r.ok) loadPeople();
+            });
+          };
+          card.appendChild(remove);
+        }
+
+        if (person.role !== "admin") {
+          var passLabel = document.createElement("label");
+          passLabel.textContent = "New password";
+          var passRow = document.createElement("div");
+          passRow.className = "pass-row";
+          var pass = document.createElement("input");
+          pass.type = "password";
+          pass.autocomplete = "new-password";
+          pass.placeholder = "At least 6 characters";
+          var randomPass = document.createElement("button");
+          randomPass.className = "ghost";
+          randomPass.type = "button";
+          randomPass.textContent = "Random password";
+          randomPass.onclick = function() { fillRandomPassword(pass); };
+          var setPass = document.createElement("button");
+          setPass.className = "ghost";
+          setPass.type = "button";
+          setPass.textContent = "Set password";
+          pass.onkeydown = function(event) {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              setPass.click();
+            }
+          };
+          passRow.appendChild(pass);
+          passRow.appendChild(randomPass);
+          passRow.appendChild(setPass);
+          card.appendChild(passLabel);
+          card.appendChild(passRow);
+          setPass.onclick = function() {
+            fetch("/api/password", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({username: person.username, new: pass.value})
+            }).then(function(r) {
+              say("admin-msg", r, "Password set for " + person.username + ".");
+              if (r.ok) {
+                pass.value = "";
+                pass.type = "password";
+              }
+            });
+          };
+        }
 
         card.onsubmit = function(event) {
           event.preventDefault();
@@ -226,16 +319,6 @@
             failed.text().then(function(text) {
               document.getElementById("admin-msg").textContent = text || "That was not saved.";
             });
-          });
-        };
-        setPass.onclick = function() {
-          fetch("/api/password", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({username: person.username, new: pass.value})
-          }).then(function(r) {
-            say("admin-msg", r, "Password set for " + person.username + ".");
-            if (r.ok) pass.value = "";
           });
         };
         box.appendChild(card);
@@ -275,6 +358,13 @@
       show("create-devices-wrap", this.value !== "admin");
     };
 
+    document.getElementById("create-random").onclick = function() {
+      fillRandomPassword(document.querySelector("#create-user input[name=password]"));
+    };
+    document.getElementById("own-random").onclick = function() {
+      fillRandomPassword(document.getElementById("own-new"));
+    };
+
     document.getElementById("own-pass").onsubmit = function(event) {
       event.preventDefault();
       var form = event.target;
@@ -290,12 +380,125 @@
 
     requireSession(true).then(function(user) {
       if (!user) return;
+      signedIn = user.username;
       fetch("/api/devices").then(function(r) { return r.json(); }).then(function(body) {
         knownDevices = body.devices || [];
         renderCreateDevices();
+        fillGuestCameras();
         loadPeople();
       });
     });
+
+    function guestShow(step) {
+      document.getElementById("guest-start").className = step ? "hidden" : "";
+      document.getElementById("guest-step-camera").className = step === "camera" ? "" : "hidden";
+      document.getElementById("guest-step-date").className = step === "date" ? "" : "hidden";
+      document.getElementById("guest-step-email").className = step === "email" ? "" : "hidden";
+    }
+
+    function fillGuestCameras() {
+      var select = document.getElementById("guest-camera");
+      var current = select.value;
+      select.innerHTML = "";
+      var blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = knownDevices.length ? "Choose a camera" : "No cameras have connected yet";
+      select.appendChild(blank);
+      knownDevices.forEach(function(device) {
+        var option = document.createElement("option");
+        option.value = device.device_id;
+        option.textContent = deviceTitle(device);
+        select.appendChild(option);
+      });
+      select.value = current;
+    }
+
+    function writeSlip(win, text, title) {
+      if (!win || win.closed) return;
+      var doc = win.document;
+      doc.open();
+      doc.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Guest sign-in</title><style>body{font-family:Georgia,serif;margin:40px;color:#111}h1{font-size:22px}pre{white-space:pre-wrap;font-family:Georgia,serif;font-size:16px;line-height:1.45}.noprint{margin-top:24px}button{font-size:16px;padding:8px 16px}@media print{.noprint{display:none}}</style></head><body><h1 id='title'></h1><pre id='slip'></pre><p class='noprint'><button type='button' onclick='print()'>Print</button></p></body></html>");
+      doc.close();
+      doc.getElementById("title").textContent = title || "Guest sign-in";
+      doc.title = title || "Guest sign-in";
+      doc.getElementById("slip").textContent = text;
+      win.focus();
+      win.print();
+    }
+
+    function guestNote(body) {
+      if (body.email_status === "sent") return "A copy was emailed to " + body.email + ".";
+      if (body.email_status === "not configured") return "No email was sent. Add a mail server on Settings.";
+      if (body.email_status === "failed") return "The account was created, but the email could not be sent.";
+      return "Print this page before you leave. The password is not shown again.";
+    }
+
+    document.getElementById("guest-wizard").onsubmit = function(event) {
+      event.preventDefault();
+    };
+    document.getElementById("guest-start").onclick = function() {
+      document.getElementById("guest-msg").textContent = "";
+      guestShow("camera");
+    };
+    document.getElementById("guest-next-date").onclick = function() {
+      if (!document.getElementById("guest-camera").value) {
+        document.getElementById("guest-msg").textContent = "Choose a camera.";
+        return;
+      }
+      document.getElementById("guest-msg").textContent = "";
+      guestShow("date");
+    };
+    document.getElementById("guest-back-camera").onclick = function() { guestShow("camera"); };
+    document.getElementById("guest-next-email").onclick = function() {
+      if (!document.getElementById("guest-date").value) {
+        document.getElementById("guest-msg").textContent = "Choose the date access ends.";
+        return;
+      }
+      document.getElementById("guest-msg").textContent = "";
+      guestShow("email");
+    };
+    document.getElementById("guest-back-date").onclick = function() { guestShow("date"); };
+    document.getElementById("guest-create").onclick = function() {
+      var camera = document.getElementById("guest-camera").value;
+      var expiresOn = document.getElementById("guest-date").value;
+      if (!camera || !expiresOn) {
+        document.getElementById("guest-msg").textContent = "Choose a camera and an end date.";
+        return;
+      }
+      var slipWindow = window.open("", "guest-slip");
+      var button = document.getElementById("guest-create");
+      button.disabled = true;
+      fetch("/api/guest", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          device_id: camera,
+          expires_on: expiresOn,
+          email: document.getElementById("guest-email").value
+        })
+      }).then(function(r) {
+        button.disabled = false;
+        if (!r.ok) {
+          if (slipWindow && !slipWindow.closed) slipWindow.close();
+          say("guest-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          var slip = document.getElementById("guest-slip");
+          slip.textContent = body.instructions;
+          slip.className = "";
+          writeSlip(slipWindow, body.instructions, body.title);
+          document.getElementById("guest-msg").textContent = "Guest account " + body.username + " is ready. " + guestNote(body);
+          document.getElementById("guest-email").value = "";
+          guestShow("");
+          loadPeople();
+        });
+      }).catch(function() {
+        button.disabled = false;
+        if (slipWindow && !slipWindow.closed) slipWindow.close();
+        document.getElementById("guest-msg").textContent = "The guest account was not created.";
+      });
+    };
   </script>
 </body>
 </html>

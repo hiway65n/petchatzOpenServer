@@ -55,16 +55,20 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /petchatzDevice2.html` | Device call page |
 | `GET /` | Sign-in page |
 | `GET /calls` | Call page for a signed-in person |
-| `GET /users`, `GET /devices`, `GET /schedule`, `GET /audit` | Admin pages. Anyone else is sent back to Calls |
+| `GET /users`, `GET /devices`, `GET /schedule`, `GET /audit`, `GET /settings` | Admin pages. Anyone else is sent back to Calls |
 | `POST /login`, `POST /logout`, `GET /api/session` | Session cookie `sid` |
 | `GET /api/devices` | Cameras for this session |
-| `GET /api/users`, `POST /api/users`, `POST /api/assign`, `POST /api/account` | Admin. Accounts, camera access, enabled flag, and expiration |
-| `POST /api/password` | Change your own password, with the current one. An admin can set another account's password without it |
+| `GET /api/users`, `POST /api/users`, `POST /api/users/delete`, `POST /api/assign`, `POST /api/account` | Admin. Accounts, camera access, enabled flag, expiration, and deleting an account |
+| `POST /api/guest` | Admin. Create a guest for one camera with a generated username and password. The password is returned once and is not stored in the activity log |
+| `POST /api/password` | Admin. Set a user account's password, or change your own after the current one. A user cannot change a password |
 | `POST /api/device`, `POST /api/device/remove` | Admin. Save or remove one camera |
 | `POST /api/device/deploy` | Admin. Given a home-network address, install the watchdog drop-in, point the camera at the hub, and reload its screen. Uses the empty root password the camera shipped with |
 | `POST /api/treat` | Signed-in user who can call that camera, and only when treats are turned on for it. Refused outside an operating window or after that camera's 24-hour limit |
 | `POST /api/scent` | Signed-in user who can call that camera, and only when scent is turned on for it. Refused outside an operating window or after that camera's 24-hour limit |
 | `GET /api/hours`, `POST /api/hours`, `POST /api/hours/remove`, `POST /api/hours/limits`, `POST /api/hours/timezone` | Admin. Operating windows, daily treat and scent limits, and the house time zone |
+| `GET /api/settings`, `POST /api/settings` | Admin. Public name, tunnel, relays, and the mail server. Secrets are not returned, only whether one is saved and its last four characters |
+| `POST /api/mail/test` | Admin. Sends one test message after mail is saved |
+| `GET /api/tasks`, `POST /api/tasks`, `POST /api/tasks/run` | Admin. Daily tasks. The built-in task deletes expired guest accounts |
 | `GET /api/audit` | Admin. Newest hub actions, filtered with `username` and `device` |
 | `GET /api/screen`, `POST /api/screen`, `POST /api/screen/remove` | Admin. Upload or remove the JPEG shown on every camera while it is ready, and the JPEG shown while it is out of service |
 | `GET /screen/ready.jpg`, `GET /screen/closed.jpg` | The idle pictures, when an admin has saved them. The camera page loads these |
@@ -74,9 +78,11 @@ Passwords are stored as PBKDF2-HMAC-SHA256. `hub.db` is mode 600, including its 
 
 The `hours` table stores operating windows for a camera: `allow` or `deny`, `weekly` or `once`, the days or the date, and a start and end in minutes. No rows means the camera can be used any time. If any `allow` row exists, the camera is open only inside one of those, and a `deny` row closes it even then. Treat and scent use the same open check. `feature_uses` counts each successful treat or scent for 24 hours. `devices.treat_daily_max` and `scent_daily_max` default to 12. The house time zone is `timezone` in `config.json`. Until it is set, windows use the hub's own clock.
 
-The `audit` table records hub actions: who did it, the address they connected from, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written.
+The `audit` table records hub actions: who did it, the address they connected from, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written. When activity mail is errors only or every activity, the hub emails that same record. The guest sign-in message is a separate email and is the one that contains the new password.
 
-When Outside the house is a Cloudflare Tunnel, the hub runs one `cloudflared`. As a service rewrites `cloudflared.service` and restarts it, including a service created with `cloudflared service install`. Standalone rewrites `petchatz-tunnel` instead. Saving stops the other unit and any extra `cloudflared` process, then checks that one remains. Turning the tunnel off stops both. The token is in a root-only file and is not placed on the command line. See [off-lan.md](off-lan.md).
+A guest account is a user with `source` `wizard`, one camera, an end date, and an optional email. The password is hashed the same way as any other account. The printed page and the email use the guest instruction text from Settings. That text can include `{name}`, `{camera}`, `{expires}`, `{address}`, `{username}`, and `{password}`. Until an admin changes it, the hub uses its starting text. The name at the top of each page is `instance_name` in `config.json`, and it is OpenPetChatz until one is saved. The `tasks` table holds the daily job that deletes those accounts after the end date. It does not delete any other account. Mail server settings stay in `config.json` with the other secrets.
+
+When Settings uses a Cloudflare Tunnel, the hub runs one `cloudflared`. As a service rewrites `cloudflared.service` and restarts it, including a service created with `cloudflared service install`. Standalone rewrites `petchatz-tunnel` instead. Saving stops the other unit and any extra `cloudflared` process, then checks that one remains. Turning the tunnel off stops both. The token is in a root-only file and is not placed on the command line. See [off-lan.md](off-lan.md).
 
 ## ICE
 

@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings · {{name}}</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <h1>{{name}}</h1>
+    <nav class="nav">
+      <a href="/calls">Calls</a>
+      <a href="/users">People</a>
+      <a href="/devices">Devices</a>
+      <a href="/schedule">Schedule</a>
+      <a href="/audit">Activity</a>
+      <a class="here" href="/settings">Settings</a>
+      <span class="who" id="who"></span>
+      <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
+    </nav>
+    <form id="brand" class="card">
+      <h2>Name</h2>
+      <label for="instance-name">Name on the pages</label>
+      <input id="instance-name" maxlength="40" autocomplete="off">
+      <p class="sub">Shown at the top of each page, on the guest printout, and in email. Leave this blank to use OpenPetChatz.</p>
+      <h2>Guest instructions</h2>
+      <label for="guest-template">Text for the printed page and the email</label>
+      <textarea id="guest-template"></textarea>
+      <p class="sub">{name}, {camera}, {expires}, {address}, {username}, and {password} are filled in when the guest account is created. {address} is the public web address, or a blank line when that name is not set. The instructions need {username} and {password}.</p>
+      <button type="submit">Save name and instructions</button>
+      <button id="guest-template-reset" class="ghost" type="button">Restore the starting text</button>
+      <p id="brand-msg"></p>
+    </form>
+    <form id="public-host" class="card">
+      <label for="access-mode">How people open the page</label>
+      <select id="access-mode">
+        <option value="hostname">A web address I publish</option>
+        <option value="tunnel">A Cloudflare Tunnel</option>
+      </select>
+      <label id="host-label" for="public-host-input">External address</label>
+      <input id="public-host-input" name="public_host" placeholder="petchatz.example.net" autocomplete="off">
+      <div id="tunnel-fields" class="hidden">
+        <label for="tunnel-run">How cloudflared runs</label>
+        <select id="tunnel-run">
+          <option value="service">As a service</option>
+          <option value="standalone">Standalone</option>
+        </select>
+        <label for="tunnel-token">Tunnel token</label>
+        <input id="tunnel-token" type="password" autocomplete="new-password">
+        <p id="tunnel-note" class="sub"></p>
+        <div class="checks">
+          <label><input id="tunnel-clear" type="checkbox"> Remove the saved token</label>
+        </div>
+        <p id="tunnel-status" class="sub"></p>
+        <button id="install-cloudflared" class="ghost" type="button">Install cloudflared</button>
+      </div>
+      <p id="access-help" class="sub">People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.</p>
+      <h2>Call relay</h2>
+      <p class="sub">A call inside the house still prefers a direct path. Use one cloud relay plus this hub. The camera gathers addresses on one core, so turning both cloud relays on at once makes that slower.</p>
+      <div class="checks">
+        <label><input id="turn-local" type="checkbox"> This hub</label>
+      </div>
+      <p class="sub">Uses the TURN ports forwarded to this machine.</p>
+      <div class="checks">
+        <label><input id="metered-enabled" type="checkbox"> Metered Open Relay</label>
+      </div>
+      <label for="metered-domain">Metered domain</label>
+      <input id="metered-domain" placeholder="yourapp.metered.live" autocomplete="off">
+      <label for="metered-key">Metered API key</label>
+      <input id="metered-key" type="password" autocomplete="new-password">
+      <p id="metered-note" class="sub"></p>
+      <div class="checks">
+        <label><input id="metered-clear" type="checkbox"> Remove the saved Metered key</label>
+      </div>
+      <div class="checks">
+        <label><input id="cf-enabled" type="checkbox"> Cloudflare TURN</label>
+      </div>
+      <label for="cf-key-id">Cloudflare TURN key id</label>
+      <input id="cf-key-id" autocomplete="off">
+      <label for="cf-token">Cloudflare API token</label>
+      <input id="cf-token" type="password" autocomplete="new-password">
+      <p id="cf-note" class="sub"></p>
+      <div class="checks">
+        <label><input id="cf-clear" type="checkbox"> Remove the saved Cloudflare token</label>
+      </div>
+      <button type="submit">Save</button>
+    </form>
+    <form id="mail" class="card">
+      <h2>Mail</h2>
+      <p class="sub">Used to email a guest sign-in, and to email activity. The password is stored on this hub and is not shown again after you save it.</p>
+      <label for="smtp-host">Mail server</label>
+      <input id="smtp-host" placeholder="smtp.example.net" autocomplete="off">
+      <label for="smtp-port">Port</label>
+      <input id="smtp-port" inputmode="numeric" value="587">
+      <label for="smtp-security">Encryption</label>
+      <select id="smtp-security">
+        <option value="starttls">STARTTLS</option>
+        <option value="ssl">SSL</option>
+        <option value="none">None</option>
+      </select>
+      <label for="smtp-user">Username</label>
+      <input id="smtp-user" autocomplete="off">
+      <label for="smtp-password">Password</label>
+      <input id="smtp-password" type="password" autocomplete="new-password">
+      <p id="smtp-note" class="sub"></p>
+      <div class="checks">
+        <label><input id="smtp-clear" type="checkbox"> Remove the saved mail password</label>
+      </div>
+      <label for="smtp-from">From address</label>
+      <input id="smtp-from" type="email" placeholder="petchatz@example.net" autocomplete="off">
+      <label for="audit-email">Activity mail</label>
+      <select id="audit-email">
+        <option value="off">Do not email activity</option>
+        <option value="errors">Errors only</option>
+        <option value="all">Every activity</option>
+      </select>
+      <label for="audit-email-to">Send activity to</label>
+      <input id="audit-email-to" type="email" placeholder="admin@example.com" autocomplete="off">
+      <p class="sub">Errors are sign-in failures, refused calls, and setup that did not finish. Passwords are not included. A guest sign-in email is separate, and that message does include the new password.</p>
+      <button type="submit">Save mail</button>
+      <button id="mail-test" class="ghost" type="button">Send a test</button>
+      <p id="mail-msg"></p>
+    </form>
+    <form id="tasks" class="card">
+      <h2>Tasks</h2>
+      <p class="sub">Each task runs once a day at the time you choose, using the house time zone from Schedule. Turning one on after today's time has passed waits until tomorrow. Run now does it immediately.</p>
+      <div id="task-list"></div>
+      <p id="task-msg"></p>
+    </form>
+    <p id="settings-msg"></p>
+  </main>
+  <script src="/common.js"></script>
+  <script>
+    var guestTemplateDefault = "";
+
+    function savedNote(isSet, last4) {
+      if (!isSet) return "Nothing saved yet. You can turn the service on and add this later.";
+      if (last4) return "Saved, ending in " + last4 + ". Leave the box blank to keep it.";
+      return "Saved. Leave the box blank to keep it.";
+    }
+
+    function showAccessMode() {
+      var tunnel = document.getElementById("access-mode").value === "tunnel";
+      document.getElementById("tunnel-fields").className = tunnel ? "" : "hidden";
+      document.getElementById("host-label").textContent = tunnel ? "Tunnel hostname" : "External address";
+      document.getElementById("access-help").textContent = tunnel
+        ? "In Cloudflare, send that hostname to https://127.0.0.1:443 and turn on No TLS Verify. As a service updates cloudflared.service even if this hub did not install it. Standalone updates the hub's own copy. Saving stops the other so only one cloudflared is running. This tunnel carries the page only. Calls still need a relay below."
+        : "People away from home open https:// and this name. A proxy on your network can handle that page. The camera keeps using the address inside the house.";
+    }
+
+    function showSettings(body) {
+      document.getElementById("access-mode").value = body.access_mode === "tunnel" ? "tunnel" : "hostname";
+      document.getElementById("public-host-input").value = body.public_host || "";
+      document.getElementById("turn-local").checked = body.turn_local !== false;
+      document.getElementById("metered-enabled").checked = !!body.metered_enabled;
+      document.getElementById("metered-domain").value = body.metered_domain || "";
+      document.getElementById("metered-key").value = "";
+      document.getElementById("metered-clear").checked = false;
+      document.getElementById("metered-note").textContent = savedNote(body.metered_api_key_set, body.metered_api_key_last4);
+      document.getElementById("cf-enabled").checked = !!body.cloudflare_turn_enabled;
+      document.getElementById("cf-key-id").value = body.cloudflare_turn_key_id || "";
+      document.getElementById("cf-token").value = "";
+      document.getElementById("cf-clear").checked = false;
+      document.getElementById("cf-note").textContent = savedNote(body.cloudflare_turn_token_set, body.cloudflare_turn_token_last4);
+      document.getElementById("tunnel-run").value = body.tunnel_run === "service" ? "service" : "standalone";
+      document.getElementById("tunnel-token").value = "";
+      document.getElementById("tunnel-clear").checked = false;
+      document.getElementById("tunnel-note").textContent = savedNote(body.tunnel_token_set, body.tunnel_token_last4);
+      document.getElementById("tunnel-status").textContent = body.tunnel_status || "";
+      document.getElementById("smtp-host").value = body.smtp_host || "";
+      document.getElementById("smtp-port").value = body.smtp_port || 587;
+      document.getElementById("smtp-security").value = body.smtp_security === "ssl" || body.smtp_security === "none" ? body.smtp_security : "starttls";
+      document.getElementById("smtp-user").value = body.smtp_user || "";
+      document.getElementById("smtp-password").value = "";
+      document.getElementById("smtp-clear").checked = false;
+      document.getElementById("smtp-note").textContent = savedNote(body.smtp_password_set, body.smtp_password_last4);
+      document.getElementById("smtp-from").value = body.smtp_from || "";
+      document.getElementById("audit-email").value = body.audit_email === "all" || body.audit_email === "errors" ? body.audit_email : "off";
+      document.getElementById("audit-email-to").value = body.audit_email_to || "";
+      document.getElementById("instance-name").value = body.instance_name || "";
+      document.getElementById("guest-template").value = body.guest_template || "";
+      guestTemplateDefault = body.guest_template_default || "";
+      var install = document.getElementById("install-cloudflared");
+      install.className = body.cloudflared_installed ? "ghost hidden" : "ghost";
+      showAccessMode();
+    }
+
+    function loadSettings() {
+      return fetch("/api/settings").then(function(r) { return r.json(); }).then(showSettings);
+    }
+
+    document.getElementById("access-mode").onchange = showAccessMode;
+
+    document.getElementById("install-cloudflared").onclick = function() {
+      var button = document.getElementById("install-cloudflared");
+      button.disabled = true;
+      document.getElementById("settings-msg").textContent = "Installing cloudflared. This can take a minute.";
+      fetch("/api/tunnel/install", {method: "POST"}).then(function(r) {
+        button.disabled = false;
+        if (!r.ok) {
+          say("settings-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          document.getElementById("settings-msg").textContent = body.notice || "cloudflared is installed.";
+          loadSettings();
+        });
+      }).catch(function() {
+        button.disabled = false;
+        document.getElementById("settings-msg").textContent = "cloudflared was not installed.";
+      });
+    };
+
+    document.getElementById("public-host").onsubmit = function(event) {
+      event.preventDefault();
+      var body = {
+        access_mode: document.getElementById("access-mode").value,
+        tunnel_run: document.getElementById("tunnel-run").value,
+        public_host: document.getElementById("public-host-input").value,
+        turn_local: document.getElementById("turn-local").checked,
+        metered_enabled: document.getElementById("metered-enabled").checked,
+        metered_domain: document.getElementById("metered-domain").value,
+        metered_api_key_clear: document.getElementById("metered-clear").checked,
+        cloudflare_turn_enabled: document.getElementById("cf-enabled").checked,
+        cloudflare_turn_key_id: document.getElementById("cf-key-id").value,
+        cloudflare_turn_token_clear: document.getElementById("cf-clear").checked,
+        tunnel_token_clear: document.getElementById("tunnel-clear").checked
+      };
+      var meteredKey = document.getElementById("metered-key").value;
+      var cfToken = document.getElementById("cf-token").value;
+      var tunnelToken = document.getElementById("tunnel-token").value;
+      if (meteredKey) body.metered_api_key = meteredKey;
+      if (cfToken) body.cloudflare_turn_token = cfToken;
+      if (tunnelToken) body.tunnel_token = tunnelToken;
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      }).then(function(r) {
+        if (!r.ok) {
+          say("settings-msg", r, "");
+          return;
+        }
+        r.json().then(function(saved) {
+          showSettings(saved);
+          document.getElementById("settings-msg").textContent = saved.notice || "Saved. Refresh a browser that uses the public name before the next call.";
+        });
+      }).catch(function() {
+        document.getElementById("settings-msg").textContent = "Settings were not saved.";
+      });
+    };
+
+    requireSession(true).then(function(user) {
+      if (!user) return;
+      loadSettings();
+      loadTasks();
+    });
+
+    function padTime(n) {
+      return (n < 10 ? "0" : "") + n;
+    }
+
+    function renderTasks(tasks) {
+      var box = document.getElementById("task-list");
+      box.innerHTML = "";
+      (tasks || []).forEach(function(task) {
+        var block = document.createElement("div");
+        var title = document.createElement("strong");
+        title.textContent = task.title;
+        block.appendChild(title);
+        var enabledLabel = document.createElement("label");
+        var enabled = document.createElement("input");
+        enabled.type = "checkbox";
+        enabled.checked = !!task.enabled;
+        enabledLabel.appendChild(enabled);
+        enabledLabel.appendChild(document.createTextNode(" Run this task"));
+        block.appendChild(enabledLabel);
+        var timeLabel = document.createElement("label");
+        timeLabel.textContent = "Time of day (" + (task.timezone || "house time") + ")";
+        var time = document.createElement("input");
+        time.type = "time";
+        time.value = padTime(task.hour) + ":" + padTime(task.minute);
+        block.appendChild(timeLabel);
+        block.appendChild(time);
+        var last = document.createElement("p");
+        last.className = "sub";
+        var when = task.last_run ? new Date(task.last_run * 1000).toLocaleString() : "not yet";
+        last.textContent = "Last run: " + when + (task.last_result ? ". " + task.last_result : "");
+        block.appendChild(last);
+        var save = document.createElement("button");
+        save.type = "button";
+        save.textContent = "Save task";
+        var run = document.createElement("button");
+        run.className = "ghost";
+        run.type = "button";
+        run.textContent = "Run now";
+        save.onclick = function() {
+          var parts = (time.value || "").split(":");
+          fetch("/api/tasks", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              id: task.id,
+              enabled: enabled.checked,
+              hour: parseInt(parts[0], 10),
+              minute: parseInt(parts[1], 10)
+            })
+          }).then(function(r) {
+            if (!r.ok) {
+              say("task-msg", r, "");
+              return;
+            }
+            r.json().then(function(body) {
+              document.getElementById("task-msg").textContent = "Saved " + task.title + ".";
+              renderTasks(body.tasks);
+            });
+          });
+        };
+        run.onclick = function() {
+          run.disabled = true;
+          fetch("/api/tasks/run", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({id: task.id})
+          }).then(function(r) {
+            run.disabled = false;
+            if (!r.ok) {
+              say("task-msg", r, "");
+              return;
+            }
+            r.json().then(function(body) {
+              document.getElementById("task-msg").textContent = body.result || "Done.";
+              renderTasks(body.tasks);
+            });
+          }).catch(function() {
+            run.disabled = false;
+            document.getElementById("task-msg").textContent = "The task did not run.";
+          });
+        };
+        block.appendChild(save);
+        block.appendChild(run);
+        box.appendChild(block);
+      });
+    }
+
+    function loadTasks() {
+      return fetch("/api/tasks").then(function(r) { return r.json(); }).then(function(body) {
+        renderTasks(body.tasks || []);
+      });
+    }
+
+    document.getElementById("tasks").onsubmit = function(event) {
+      event.preventDefault();
+    };
+
+    document.getElementById("mail").onsubmit = function(event) {
+      event.preventDefault();
+      var body = {
+        smtp_host: document.getElementById("smtp-host").value,
+        smtp_port: document.getElementById("smtp-port").value,
+        smtp_security: document.getElementById("smtp-security").value,
+        smtp_user: document.getElementById("smtp-user").value,
+        smtp_from: document.getElementById("smtp-from").value,
+        smtp_password_clear: document.getElementById("smtp-clear").checked,
+        audit_email: document.getElementById("audit-email").value,
+        audit_email_to: document.getElementById("audit-email-to").value
+      };
+      var password = document.getElementById("smtp-password").value;
+      if (password) body.smtp_password = password;
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      }).then(function(r) {
+        if (!r.ok) {
+          say("mail-msg", r, "");
+          return;
+        }
+        r.json().then(function(saved) {
+          showSettings(saved);
+          document.getElementById("mail-msg").textContent = "Mail saved.";
+        });
+      }).catch(function() {
+        document.getElementById("mail-msg").textContent = "Mail was not saved.";
+      });
+    };
+
+    document.getElementById("mail-test").onclick = function() {
+      fetch("/api/mail/test", {method: "POST"}).then(function(r) {
+        if (!r.ok) {
+          say("mail-msg", r, "");
+          return;
+        }
+        r.json().then(function(body) {
+          document.getElementById("mail-msg").textContent = body.notice || "Test message sent.";
+        });
+      }).catch(function() {
+        document.getElementById("mail-msg").textContent = "The test message was not sent.";
+      });
+    };
+
+    document.getElementById("brand").onsubmit = function(event) {
+      event.preventDefault();
+      fetch("/api/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          instance_name: document.getElementById("instance-name").value,
+          guest_template: document.getElementById("guest-template").value
+        })
+      }).then(function(r) {
+        if (!r.ok) {
+          say("brand-msg", r, "");
+          return;
+        }
+        r.json().then(function(saved) {
+          showSettings(saved);
+          document.getElementById("brand-msg").textContent = "Saved. Refresh open pages to see the name.";
+        });
+      }).catch(function() {
+        document.getElementById("brand-msg").textContent = "The name and instructions were not saved.";
+      });
+    };
+
+    document.getElementById("guest-template-reset").onclick = function() {
+      document.getElementById("guest-template").value = guestTemplateDefault;
+      document.getElementById("brand-msg").textContent = "Starting text restored in the box. Save to keep it.";
+    };
+  </script>
+</body>
+</html>

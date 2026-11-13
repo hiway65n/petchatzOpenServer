@@ -26,6 +26,7 @@ function requireSession(adminOnly) {
     var who = document.getElementById("who");
     if (who) who.textContent = body.user.username;
     if (body.user.role === "admin") {
+      document.body.classList.add("is-admin");
       var links = document.querySelectorAll(".admin-only");
       for (var i = 0; i < links.length; i++) links[i].classList.remove("hidden");
     }

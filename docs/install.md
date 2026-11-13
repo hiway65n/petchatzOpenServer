@@ -31,7 +31,7 @@ Open `https://<hub-ip>/` from another computer on the LAN and accept the certifi
 
 ```bash
 sudo apt-get install -y sshpass
-sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/schedule.html hub/audit.html hub/app.css hub/common.js /opt/petchatz-hub/
+sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/settings.html hub/schedule.html hub/audit.html hub/app.css hub/common.js /opt/petchatz-hub/
 sudo systemctl restart petchatz-hub
 ```
 
@@ -41,7 +41,7 @@ Restarting the hub drops live calls. It does not reboot the device. If `device.h
 
 | File | Purpose |
 | --- | --- |
-| `/opt/petchatz-hub/config.json` | LAN IP, TURN user, TURN password, first admin, optional `timezone`, and the outside-access choices from the Devices page |
+| `/opt/petchatz-hub/config.json` | LAN IP, TURN user, TURN password, first admin, optional `timezone`, the page name, guest instruction text, the public name, tunnel, and relay choices from Settings, and the mail server if one is saved |
 | `/opt/petchatz-hub/cert.pem` and `key.pem` | TLS certificate for the hub IP |
 | `/opt/petchatz-hub/turn.conf` | coturn config, including the TURN password |
 | `/opt/petchatz-hub/hub.db` | Accounts, sessions, camera settings, operating windows, treat and scent counts, and the activity log. Mode 600 |
@@ -49,7 +49,7 @@ Restarting the hub drops live calls. It does not reboot the device. If `device.h
 
 `hub/config.example.json` shows the keys only. Do not copy a live `config.json` into git. Leave `timezone` empty to use the hub's own clock. An admin can set a house time zone, such as `America/Chicago`, on the Schedule page. That value is what operating windows use.
 
-Metered, Cloudflare TURN, and a Cloudflare Tunnel are optional and are filled in on the Devices page. The installer does not download `cloudflared`. When a tunnel token is saved, the hub writes `/opt/petchatz-hub/tunnel.token` (mode 600, gitignored). As a service updates `cloudflared.service`, including a copy installed outside this hub. Standalone updates `petchatz-tunnel` and stops the other. Clearing the token or switching back to a web address stops both. The hub then checks that only one `cloudflared` process is running. It does not restart `petchatz.service` on a camera.
+Metered, Cloudflare TURN, and a Cloudflare Tunnel are optional and are filled in on the Settings page. The installer does not download `cloudflared`. When a tunnel token is saved, the hub writes `/opt/petchatz-hub/tunnel.token` (mode 600, gitignored). As a service updates `cloudflared.service`, including a copy installed outside this hub. Standalone updates `petchatz-tunnel` and stops the other. Clearing the token or switching back to a web address stops both. The hub then checks that only one `cloudflared` process is running. It does not restart `petchatz.service` on a camera.
 
 ## Firewall
 

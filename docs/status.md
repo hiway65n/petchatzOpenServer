@@ -7,7 +7,12 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 ## Works on the local network
 
 - The device finds the hub, comes online, and stays registered.
-- Sign-in, separate Calls, People, Devices, Schedule, and Activity pages, and choosing which cameras each user can call.
+- Sign-in, separate Calls, People, Devices, Schedule, Activity, and Settings pages, and choosing which cameras each user can call. A user sees only Calls.
+- The name at the top of the pages starts as OpenPetChatz. An admin can change it, and can change the guest instruction text.
+- An admin can delete an account. The signed-in account stays, and at least one admin who can sign in has to remain.
+- An admin can create a guest sign-in for one camera, print the username and password, and email those instructions when mail is configured.
+- A daily task can delete guest accounts after their end date. Other accounts are deleted only when an admin does that by hand.
+- Activity can be emailed as it happens, either every entry or errors only.
 - An admin can filter hub actions by username and by camera name or id.
 - Accounts can be turned off or given an end time. An open Calls page for that account is closed.
 - An admin can send the watchdog change and the hub address to a camera from Devices.
@@ -22,12 +27,11 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 
 ## Works from outside the house
 
-- The call page and its web socket, through a reverse proxy such as Zoraxy, or through a Cloudflare Tunnel configured on Devices. See [off-lan.md](off-lan.md). The hub can update a `cloudflared` it did not install, and it leaves only one copy running. The tunnel carries the page only.
-- The media relay, by forwarding TURN straight to the hub, or by turning on Metered or Cloudflare TURN on Devices. The proxy does not carry that UDP traffic. Both sides of a call receive the same cloud relay.
+- The call page and its web socket, through a reverse proxy such as Zoraxy, or through a Cloudflare Tunnel configured on Settings. See [off-lan.md](off-lan.md). The hub can update a `cloudflared` it did not install, and it leaves only one copy running. The tunnel carries the page only.
+- The media relay, by forwarding TURN straight to the hub, or by turning on Metered or Cloudflare TURN on Settings. The proxy does not carry that UDP traffic. Both sides of a call receive the same cloud relay.
 
 ## Not done
 
-- A one-time password that is generated for an account and expires after a chosen time.
 - A diagnostics page that shows one device's recent log lines.
 - A mobile app. The pages already talk to the hub with JSON, which is the shape an app would use.
 - Replacing the self-signed certificate with a name people can trust, if the proxy is not already presenting one.

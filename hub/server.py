@@ -10,12 +10,14 @@ import os
 import re
 import secrets
 import signal
+import smtplib
 import sqlite3
 import ssl
 import subprocess
 import threading
 import time
 from contextvars import ContextVar
+from email.message import EmailMessage
 import urllib.parse
 import urllib.request
 import uuid
@@ -40,6 +42,21 @@ treat_sent_at = {}
 # device_id -> last scent request time
 scent_sent_at = {}
 SCENT_SECONDS = 10
+TASK_DELETE_GUESTS = "delete-expired-guests"
+GUEST_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+DEFAULT_INSTANCE_NAME = "OpenPetChatz"
+DEFAULT_GUEST_TEMPLATE = """You can call one camera: {camera}
+This account stops at {expires}.
+
+{address}
+
+Sign in with these:
+Username: {username}
+Password: {password}
+
+After you sign in, the page is Calls. Choose the camera and press Call.
+The other pages are not shown for this account.
+When the time above has passed, this sign-in stops working."""
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 HOUSE_ZONES = (
     "America/Chicago",
@@ -164,6 +181,8 @@ def connect_db():
             db.execute("ALTER TABLE devices ADD COLUMN treat_daily_max INTEGER NOT NULL DEFAULT 12")
         if "scent_daily_max" not in columns:
             db.execute("ALTER TABLE devices ADD COLUMN scent_daily_max INTEGER NOT NULL DEFAULT 12")
+        if "last_ip" not in columns:
+            db.execute("ALTER TABLE devices ADD COLUMN last_ip TEXT NOT NULL DEFAULT ''")
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "enabled" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
@@ -172,6 +191,38 @@ def connect_db():
         audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit)")}
         if "remote" not in audit_columns:
             db.execute("ALTER TABLE audit ADD COLUMN remote TEXT NOT NULL DEFAULT ''")
+        if "email" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+        if "source" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                hour INTEGER NOT NULL DEFAULT 3,
+                minute INTEGER NOT NULL DEFAULT 0,
+                last_run INTEGER,
+                last_result TEXT NOT NULL DEFAULT '',
+                armed_at INTEGER
+            )
+            """
+        )
+        task_columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
+        if "armed_at" not in task_columns:
+            db.execute("ALTER TABLE tasks ADD COLUMN armed_at INTEGER")
+        existing_task = db.execute(
+            "SELECT id FROM tasks WHERE id = ?", (TASK_DELETE_GUESTS,)
+        ).fetchone()
+        if existing_task is None:
+            db.execute(
+                """
+                INSERT INTO tasks (id, title, enabled, hour, minute)
+                VALUES (?, 'Delete expired guest accounts', 0, 3, 0)
+                """,
+                (TASK_DELETE_GUESTS,),
+            )
         db.commit()
         count = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         if count == 0:
@@ -510,7 +561,7 @@ def request_audience(request):
 def device_profile(device_id):
     with db_lock:
         row = db.execute(
-            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled, scent_enabled, treat_daily_max, scent_daily_max FROM devices WHERE device_id = ?",
+            "SELECT nickname, width, height, frame_rate, echo_cancel, noise_suppression, treats_enabled, scent_enabled, treat_daily_max, scent_daily_max, last_ip FROM devices WHERE device_id = ?",
             (device_id,),
         ).fetchone()
     if row is None:
@@ -525,6 +576,7 @@ def device_profile(device_id):
             "scent": False,
             "treat_daily_max": 12,
             "scent_daily_max": 12,
+            "last_ip": "",
         }
     return {
         "nickname": row["nickname"] or "",
@@ -537,7 +589,18 @@ def device_profile(device_id):
         "scent": bool(row["scent_enabled"]),
         "treat_daily_max": int(row["treat_daily_max"]),
         "scent_daily_max": int(row["scent_daily_max"]),
+        "last_ip": row["last_ip"] or "",
     }
+
+
+def note_device_ip(device_id, ip):
+    ip = clean_ip(ip)
+    if not device_id or not ip:
+        return
+    remember_device(device_id)
+    with db_lock:
+        db.execute("UPDATE devices SET last_ip = ? WHERE device_id = ?", (ip, device_id))
+        db.commit()
 
 
 def like_pattern(value):
@@ -631,6 +694,322 @@ def record_audit(username, role, action, device_id="", nickname=None, subject=""
             db.commit()
     except Exception:
         log.exception("audit write failed")
+        return
+    queue_audit_email(
+        username, role, action, device_id, nickname or "", subject, detail, remote or ""
+    )
+
+
+def audit_is_error(action):
+    text = (action or "").lower()
+    return "fail" in text or "refus" in text
+
+
+def queue_audit_email(username, role, action, device_id, nickname, subject, detail, remote):
+    try:
+        cfg = load_config()
+        mode = cfg.get("audit_email") or "off"
+        if mode not in ("all", "errors"):
+            return
+        if mode == "errors" and not audit_is_error(action):
+            return
+        recipient = (cfg.get("audit_email_to") or "").strip()
+        if not recipient or not mail_ready(cfg):
+            return
+        lines = [
+            instance_name(cfg) + " activity",
+            "",
+            "When: " + format_when(datetime.now(hub_zone())),
+            "Who: " + (username or "unknown") + (" (" + role + ")" if role else ""),
+            "Action: " + (action or ""),
+        ]
+        if device_id or nickname:
+            lines.append("Camera: " + (nickname or device_id))
+        if subject:
+            lines.append("Subject: " + subject)
+        if detail:
+            lines.append("Detail: " + detail)
+        if remote:
+            lines.append("From: " + remote)
+        loop = asyncio.get_running_loop()
+        loop.create_task(deliver_mail(recipient, instance_name(cfg) + ": " + (action or "activity"), "\n".join(lines)))
+    except RuntimeError:
+        return
+    except Exception:
+        log.exception("activity mail was not queued")
+
+
+def mail_ready(cfg):
+    return bool((cfg.get("smtp_host") or "").strip() and (cfg.get("smtp_from") or "").strip())
+
+
+def smtp_port_value(cfg):
+    try:
+        port = int(cfg.get("smtp_port") or 587)
+    except (TypeError, ValueError):
+        return 587
+    if 1 <= port <= 65535:
+        return port
+    return 587
+
+
+def send_mail(cfg, recipient, subject, body):
+    host = (cfg.get("smtp_host") or "").strip()
+    sender = (cfg.get("smtp_from") or "").strip()
+    if not host or not sender:
+        raise ValueError("mail is not configured")
+    security = cfg.get("smtp_security") or "starttls"
+    if security not in ("starttls", "ssl", "none"):
+        security = "starttls"
+    try:
+        port = int(cfg.get("smtp_port") or (465 if security == "ssl" else 587))
+    except (TypeError, ValueError):
+        port = 587
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    if security == "ssl":
+        client = smtplib.SMTP_SSL(host, port, timeout=30)
+    else:
+        client = smtplib.SMTP(host, port, timeout=30)
+    try:
+        client.ehlo()
+        if security == "starttls":
+            client.starttls()
+            client.ehlo()
+        user = (cfg.get("smtp_user") or "").strip()
+        if user:
+            client.login(user, cfg.get("smtp_password") or "")
+        client.send_message(message)
+    finally:
+        try:
+            client.quit()
+        except Exception:
+            pass
+
+
+async def deliver_mail(recipient, subject, body):
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, send_mail, load_config(), recipient, subject, body
+        )
+    except Exception as exc:
+        log.warning("mail to %s failed: %s", recipient, exc)
+        return False
+    log.info("mail sent to %s", recipient)
+    return True
+
+
+def clean_email(value, label):
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
+        raise ValueError(label + " needs an email address")
+    return text
+
+
+def clean_smtp_password(value):
+    text = (value or "").strip()
+    if any(ord(ch) < 32 for ch in text):
+        raise ValueError("the mail password cannot include control characters")
+    if len(text) > 200:
+        raise ValueError("the mail password is too long")
+    return text
+
+
+def guest_code(length):
+    return "".join(secrets.choice(GUEST_ALPHABET) for _ in range(length))
+
+
+def end_of_house_day(date_text):
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", (date_text or "").strip())
+    if match is None:
+        raise ValueError("choose an end date")
+    try:
+        start = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)), tzinfo=hub_zone())
+    except ValueError:
+        raise ValueError("that end date is not a real date")
+    end = start + timedelta(days=1) - timedelta(seconds=1)
+    stamp = int(end.timestamp())
+    if stamp <= int(time.time()):
+        raise ValueError("choose an end date that is still ahead")
+    if stamp > 4000000000:
+        raise ValueError("that end date is too far away")
+    return stamp
+
+
+def instance_name(cfg=None):
+    if cfg is None:
+        cfg = load_config()
+    name = (cfg.get("instance_name") or "").strip()
+    return name or DEFAULT_INSTANCE_NAME
+
+
+def guest_template_text(cfg):
+    text = cfg.get("guest_template")
+    if text is None or not str(text).strip():
+        return DEFAULT_GUEST_TEMPLATE
+    return str(text).strip()
+
+
+def html_text(value):
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def branded_html(name):
+    return read_html(name).replace("{{name}}", html_text(instance_name()))
+
+
+def clean_instance_name(value):
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if len(text) > 40 or any(ord(ch) < 32 for ch in text):
+        raise ValueError("the name must be 40 characters or less")
+    return text
+
+
+def clean_guest_template(value):
+    text = (value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return ""
+    if len(text) > 8000:
+        raise ValueError("the guest instructions are too long")
+    if any(ord(ch) < 32 and ch not in "\n\t" for ch in text):
+        raise ValueError("the guest instructions cannot include control characters")
+    if "{username}" not in text or "{password}" not in text:
+        raise ValueError("the instructions need {username} and {password}")
+    return text.strip()
+
+
+def address_block(cfg):
+    host = visit_address(cfg)
+    if host:
+        return "Open this address in a web browser:\n" + host
+    return (
+        "Open the web address written below. The hub does not have a public name yet.\n"
+        "Web address: _______________________________"
+    )
+
+
+def guest_instructions(cfg, username, password, camera, when):
+    values = {
+        "name": instance_name(cfg),
+        "camera": camera,
+        "expires": when,
+        "address": address_block(cfg),
+        "username": username,
+        "password": password,
+    }
+    text = guest_template_text(cfg)
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return text
+
+
+def visit_address(cfg):
+    host = (cfg.get("public_host") or "").strip()
+    if not host:
+        return ""
+    return "https://%s/" % host
+
+
+def remove_account_rows(user_id):
+    with db_lock:
+        db.execute("DELETE FROM assignments WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        db.commit()
+
+
+def delete_expired_guest_accounts():
+    now = int(time.time())
+    removed = []
+    with db_lock:
+        rows = db.execute(
+            """
+            SELECT id, username FROM users
+            WHERE source = 'wizard' AND expires_at IS NOT NULL AND expires_at <= ?
+            """,
+            (now,),
+        ).fetchall()
+        for row in rows:
+            removed.append((row["id"], row["username"]))
+            db.execute("DELETE FROM assignments WHERE user_id = ?", (row["id"],))
+            db.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            db.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+        db.commit()
+    return removed
+
+
+def task_is_due(row, now):
+    if not row["enabled"]:
+        return False
+    local = now.astimezone(hub_zone())
+    scheduled = local.replace(hour=int(row["hour"]), minute=int(row["minute"]), second=0, microsecond=0)
+    if local < scheduled:
+        return False
+    armed = row["armed_at"]
+    if armed is not None and scheduled.timestamp() <= int(armed):
+        return False
+    last = row["last_run"]
+    if last is not None and int(last) >= int(scheduled.timestamp()):
+        return False
+    return True
+
+
+async def finish_guest_cleanup(removed, actor, role):
+    if not removed:
+        return "No expired guest accounts."
+    for user_id, username in removed:
+        await close_user_sockets(user_id)
+        record_audit(actor, role, "Deleted guest account", subject=username, detail="expired")
+    count = len(removed)
+    if count == 1:
+        return "Removed 1 guest account."
+    return "Removed %d guest accounts." % count
+
+
+async def run_task(task_id, actor, role):
+    if task_id != TASK_DELETE_GUESTS:
+        raise ValueError("that task does not exist")
+    result = await finish_guest_cleanup(delete_expired_guest_accounts(), actor, role)
+    with db_lock:
+        db.execute(
+            "UPDATE tasks SET last_run = ?, last_result = ? WHERE id = ?",
+            (int(time.time()), result, task_id),
+        )
+        db.commit()
+    log.info("task %s: %s", task_id, result)
+    return result
+
+
+async def run_due_tasks():
+    now = hub_now()
+    with db_lock:
+        rows = db.execute(
+            "SELECT id, enabled, hour, minute, last_run, armed_at FROM tasks"
+        ).fetchall()
+    for row in rows:
+        if task_is_due(row, now):
+            await run_task(row["id"], "task", "hub")
+
+
+async def task_loop():
+    while True:
+        try:
+            await run_due_tasks()
+        except Exception:
+            log.exception("task check failed")
+        await asyncio.sleep(30)
 
 
 def remember_device(device_id):
@@ -674,6 +1053,7 @@ def device_record(device_id, info=None):
         "version": info.get("version") or "",
         "hw": info.get("hw") or "",
         "in_call": bool(info.get("call_id")),
+        "last_ip": profile["last_ip"],
     }
 
 
@@ -1011,6 +1391,9 @@ def device_snapshot(user):
         if device_id not in seen:
             items.append(device_record(device_id))
     items.sort(key=lambda item: (item["nickname"] or item["device_id"]).lower())
+    if user["role"] != "admin":
+        for item in items:
+            item.pop("last_ip", None)
     return items
 
 
@@ -1069,6 +1452,11 @@ async def push_screen():
         if ws is None or ws.closed:
             continue
         await send_json(ws, payload)
+    for sockets in list(user_sockets.values()):
+        for ws in list(sockets):
+            if ws.closed:
+                continue
+            await send_json(ws, payload)
 
 
 async def push_service():
@@ -1085,7 +1473,7 @@ async def push_devices():
         user = user_by_id(user_id)
         if user is None:
             continue
-        payload = {"type": "devices", "devices": device_snapshot(user)}
+        payload = {"type": "devices", "devices": device_snapshot(user), "screen": screen_state()}
         for ws in list(sockets):
             if ws.closed:
                 dead.append((user_id, ws))
@@ -1125,8 +1513,9 @@ def read_html(name):
 
 
 def page(name, content_type):
+    text = branded_html(name) if name.endswith(".html") else read_html(name)
     return web.Response(
-        text=read_html(name),
+        text=text,
         content_type=content_type,
         headers={"Cache-Control": "no-store"},
     )
@@ -1150,7 +1539,7 @@ async def ice(request):
 
 async def device_page(_request):
     return web.Response(
-        text=read_html("device.html"),
+        text=branded_html("device.html"),
         content_type="text/html",
         headers={"Cache-Control": "no-store"},
     )
@@ -1171,6 +1560,15 @@ async def users_page(request):
     if user["role"] != "admin":
         raise web.HTTPFound("/calls")
     return page("users.html", "text/html")
+
+
+async def settings_page(request):
+    user = request_user(request)
+    if user is None:
+        raise web.HTTPFound("/")
+    if user["role"] != "admin":
+        raise web.HTTPFound("/calls")
+    return page("settings.html", "text/html")
 
 
 async def devices_page(request):
@@ -1280,7 +1678,7 @@ async def api_users(request):
         raise web.HTTPForbidden()
     with db_lock:
         rows = db.execute(
-            "SELECT id, username, role, enabled, expires_at FROM users ORDER BY username"
+            "SELECT id, username, role, enabled, expires_at, email, source FROM users ORDER BY username"
         ).fetchall()
         assignments = db.execute(
             "SELECT user_id, device_id FROM assignments"
@@ -1297,6 +1695,8 @@ async def api_users(request):
                     "enabled": bool(row["enabled"]),
                     "expires_at": row["expires_at"],
                     "expired": row["expires_at"] is not None and int(row["expires_at"]) <= int(time.time()),
+                    "email": row["email"] or "",
+                    "source": row["source"] or "",
                     "devices": by_user.get(row["id"], []),
                 }
                 for row in rows
@@ -1344,6 +1744,105 @@ async def api_create_user(request):
     )
     await push_devices()
     return web.json_response({"ok": True})
+
+
+async def api_delete_user(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    username = (body.get("username") or "").strip()
+    target = user_by_name(username)
+    if target is None:
+        raise web.HTTPBadRequest(text="that user does not exist")
+    if target["id"] == user["id"]:
+        raise web.HTTPBadRequest(text="you cannot delete the account you are signed in with")
+    if target["role"] == "admin" and not other_open_admins(target["id"]):
+        raise web.HTTPBadRequest(text="keep at least one admin that can sign in")
+    remove_account_rows(target["id"])
+    await close_user_sockets(target["id"])
+    record_audit(user["username"], user["role"], "Deleted account", subject=username)
+    log.info("deleted account %s", username)
+    return web.json_response({"ok": True})
+
+
+async def api_guest(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    try:
+        device_ids = clean_device_ids([body.get("device_id")])
+        expires_at = end_of_house_day(body.get("expires_on"))
+        email = clean_email(body.get("email"), "Email")
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    if len(device_ids) != 1:
+        raise web.HTTPBadRequest(text="choose a camera")
+    device_id = device_ids[0]
+    if device_id not in saved_device_ids() and device_id not in devices:
+        raise web.HTTPBadRequest(text="choose a camera that has connected")
+    password = guest_code(8)
+    stored = await hash_password_async(password)
+    created = None
+    username = ""
+    for _ in range(12):
+        username = "guest" + guest_code(4)
+        try:
+            with db_lock:
+                db.execute(
+                    """
+                    INSERT INTO users (username, password, role, enabled, expires_at, email, source)
+                    VALUES (?, ?, 'user', 1, ?, ?, 'wizard')
+                    """,
+                    (username, stored, expires_at, email),
+                )
+                db.commit()
+                created = db.execute(
+                    "SELECT id, username FROM users WHERE username = ?", (username,)
+                ).fetchone()
+            break
+        except sqlite3.IntegrityError:
+            with db_lock:
+                db.rollback()
+            created = None
+    if created is None:
+        raise web.HTTPConflict(text="a guest username could not be chosen")
+    replace_assignments(created["id"], [device_id])
+    profile = device_profile(device_id)
+    camera = profile["nickname"] or device_id
+    when = format_when(datetime.fromtimestamp(expires_at, hub_zone()))
+    cfg = load_config()
+    instructions = guest_instructions(cfg, username, password, camera, when)
+    email_status = "not requested"
+    if email:
+        if not mail_ready(cfg):
+            email_status = "not configured"
+        else:
+            sent = await deliver_mail(email, "Your " + instance_name(cfg) + " sign-in", instructions)
+            email_status = "sent" if sent else "failed"
+    detail = "camera " + camera + ", ends " + when
+    if email_status == "sent":
+        detail += ", emailed"
+    elif email_status == "not configured":
+        detail += ", mail is not configured"
+    elif email_status == "failed":
+        detail += ", email failed"
+    record_audit(user["username"], user["role"], "Created guest account", subject=username, detail=detail)
+    await push_devices()
+    return web.json_response(
+        {
+            "ok": True,
+            "username": username,
+            "password": password,
+            "camera": camera,
+            "expires_at": expires_at,
+            "email": email,
+            "email_status": email_status,
+            "instructions": instructions,
+            "title": instance_name(cfg) + " guest sign-in",
+        }
+    )
 
 
 async def api_assign(request):
@@ -1711,7 +2210,7 @@ def tunnel_note(cfg):
         return "The tunnel token is saved. Install cloudflared on the hub before it can start."
     count = len(cloudflared_processes())
     if count > 1:
-        return "More than one cloudflared is running. Save outside access to keep only the one you picked."
+        return "More than one cloudflared is running. Save on Settings to keep only the one you picked."
     chosen = tunnel_service_name(run_mode)
     if unit_active(chosen) and count == 1:
         if run_mode == "service":
@@ -1743,6 +2242,19 @@ def settings_view(cfg):
         "tunnel_run": tunnel_run_mode(cfg.get("tunnel_run")),
         "cloudflared_installed": bool(cloudflared_path()),
         "tunnel_status": tunnel_note(cfg),
+        "smtp_host": cfg.get("smtp_host") or "",
+        "smtp_port": smtp_port_value(cfg),
+        "smtp_security": cfg.get("smtp_security") or "starttls",
+        "smtp_user": cfg.get("smtp_user") or "",
+        "smtp_password_set": bool(cfg.get("smtp_password")),
+        "smtp_password_last4": last4(cfg.get("smtp_password")),
+        "smtp_from": cfg.get("smtp_from") or "",
+        "audit_email": cfg.get("audit_email") or "off",
+        "audit_email_to": cfg.get("audit_email_to") or "",
+        "mail_ready": mail_ready(cfg),
+        "instance_name": instance_name(cfg),
+        "guest_template": guest_template_text(cfg),
+        "guest_template_default": DEFAULT_GUEST_TEMPLATE,
     }
 
 
@@ -1808,6 +2320,91 @@ async def api_settings_save(request):
     cfg["tunnel_token"] = keep_secret(body, "tunnel_token", "tunnel_token_clear", cfg.get("tunnel_token") or "")
     if tunnel_token:
         cfg["tunnel_token"] = tunnel_token
+    touch_access = any(
+        key in body
+        for key in (
+            "access_mode",
+            "public_host",
+            "tunnel_run",
+            "tunnel_token",
+            "tunnel_token_clear",
+            "turn_local",
+            "metered_enabled",
+            "metered_domain",
+            "metered_api_key",
+            "metered_api_key_clear",
+            "cloudflare_turn_enabled",
+            "cloudflare_turn_key_id",
+            "cloudflare_turn_token",
+            "cloudflare_turn_token_clear",
+        )
+    )
+    touch_mail = any(
+        key in body
+        for key in (
+            "smtp_host",
+            "smtp_port",
+            "smtp_security",
+            "smtp_user",
+            "smtp_password",
+            "smtp_password_clear",
+            "smtp_from",
+            "audit_email",
+            "audit_email_to",
+        )
+    )
+    touch_brand = any(key in body for key in ("instance_name", "guest_template"))
+    if touch_mail:
+        try:
+            smtp_host = clean_public_host(body.get("smtp_host")) if "smtp_host" in body else (cfg.get("smtp_host") or "")
+            security = (body.get("smtp_security") or cfg.get("smtp_security") or "starttls").strip()
+            if security not in ("starttls", "ssl", "none"):
+                raise ValueError("choose STARTTLS, SSL, or no encryption")
+            raw_port = body.get("smtp_port")
+            if raw_port in (None, ""):
+                smtp_port = int(cfg.get("smtp_port") or (465 if security == "ssl" else 587))
+            else:
+                smtp_port = int(raw_port)
+            if not 1 <= smtp_port <= 65535:
+                raise ValueError("the mail port must be from 1 through 65535")
+            smtp_user = (body.get("smtp_user") if "smtp_user" in body else (cfg.get("smtp_user") or ""))
+            smtp_user = str(smtp_user).strip()
+            if len(smtp_user) > 200 or any(ch.isspace() or ord(ch) < 32 for ch in smtp_user):
+                raise ValueError("the mail username is not valid")
+            smtp_password = keep_secret(body, "smtp_password", "smtp_password_clear", cfg.get("smtp_password") or "")
+            if (body.get("smtp_password") or "").strip():
+                smtp_password = clean_smtp_password(body.get("smtp_password"))
+            smtp_from = clean_email(body.get("smtp_from") if "smtp_from" in body else cfg.get("smtp_from"), "From")
+            if smtp_host and not smtp_from:
+                raise ValueError("add a From address for the mail server")
+            audit_email = (body.get("audit_email") if "audit_email" in body else (cfg.get("audit_email") or "off"))
+            audit_email = str(audit_email or "off").strip()
+            if audit_email not in ("off", "errors", "all"):
+                raise ValueError("choose no activity mail, errors only, or every activity")
+            audit_email_to = clean_email(
+                body.get("audit_email_to") if "audit_email_to" in body else cfg.get("audit_email_to"),
+                "Activity mail",
+            )
+            if audit_email != "off" and not audit_email_to:
+                raise ValueError("add an address for activity mail")
+        except (TypeError, ValueError) as exc:
+            raise web.HTTPBadRequest(text=str(exc) or "mail settings are not valid")
+        cfg["smtp_host"] = smtp_host
+        cfg["smtp_port"] = smtp_port
+        cfg["smtp_security"] = security
+        cfg["smtp_user"] = smtp_user
+        cfg["smtp_password"] = smtp_password
+        cfg["smtp_from"] = smtp_from
+        cfg["audit_email"] = audit_email
+        cfg["audit_email_to"] = audit_email_to
+    if touch_brand:
+        try:
+            if "instance_name" in body:
+                cfg["instance_name"] = clean_instance_name(body.get("instance_name"))
+            if "guest_template" in body:
+                cfg["guest_template"] = clean_guest_template(body.get("guest_template"))
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text=str(exc))
     save_config(cfg)
     _relay_cache.clear()
     note = ""
@@ -1822,25 +2419,135 @@ async def api_settings_save(request):
         and not unit_active(chosen_name)
         and not unit_active(other_name)
     )
-    if changed or needs_start or too_many:
+    if touch_access and (changed or needs_start or too_many):
         try:
             note = await asyncio.get_running_loop().run_in_executor(None, apply_tunnel, mode, token_now, run_mode)
         except (OSError, subprocess.TimeoutExpired):
             log.exception("tunnel update failed")
             note = "The settings were saved, but the tunnel could not be changed."
-    detail = "%s %s, local %s, metered %s, cloudflare %s" % (
-        mode,
-        public_host or "(no name)",
-        "on" if cfg.get("turn_local", True) is not False else "off",
-        "on" if cfg.get("metered_enabled") else "off",
-        "on" if cfg.get("cloudflare_turn_enabled") else "off",
-    )
-    log.info("outside access %s", detail)
-    record_audit(user["username"], user["role"], "Saved outside access", detail=detail)
+    if touch_brand and not touch_access and not touch_mail:
+        detail = "name %s" % instance_name(cfg)
+        if "guest_template" in body:
+            detail += ", guest instructions"
+    elif touch_mail and not touch_access:
+        detail = "mail %s, activity %s" % (cfg.get("smtp_host") or "off", cfg.get("audit_email") or "off")
+    else:
+        detail = "%s %s, local %s, metered %s, cloudflare %s" % (
+            mode,
+            public_host or "(no name)",
+            "on" if cfg.get("turn_local", True) is not False else "off",
+            "on" if cfg.get("metered_enabled") else "off",
+            "on" if cfg.get("cloudflare_turn_enabled") else "off",
+        )
+        if touch_mail:
+            detail += ", mail %s, activity %s" % (cfg.get("smtp_host") or "off", cfg.get("audit_email") or "off")
+        if touch_brand:
+            detail += ", name %s" % instance_name(cfg)
+    log.info("settings %s", detail)
+    record_audit(user["username"], user["role"], "Saved settings", detail=detail)
     view = settings_view(cfg)
     view["ok"] = True
     view["notice"] = note
     return web.json_response(view)
+
+
+def task_view():
+    with db_lock:
+        rows = db.execute(
+            "SELECT id, title, enabled, hour, minute, last_run, last_result FROM tasks ORDER BY title"
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "title": row["title"],
+            "enabled": bool(row["enabled"]),
+            "hour": int(row["hour"]),
+            "minute": int(row["minute"]),
+            "last_run": row["last_run"],
+            "last_result": row["last_result"] or "",
+            "timezone": hub_zone_name(),
+        }
+        for row in rows
+    ]
+
+
+async def api_tasks(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    return web.json_response({"tasks": task_view()})
+
+
+async def api_task_save(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    task_id = (body.get("id") or "").strip()
+    with db_lock:
+        row = db.execute("SELECT id, title FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise web.HTTPBadRequest(text="that task does not exist")
+    try:
+        hour = int(body.get("hour"))
+        minute = int(body.get("minute"))
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="choose a time of day")
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise web.HTTPBadRequest(text="choose a time of day")
+    enabled = 1 if body.get("enabled") else 0
+    with db_lock:
+        db.execute(
+            "UPDATE tasks SET enabled = ?, hour = ?, minute = ?, armed_at = ? WHERE id = ?",
+            (enabled, hour, minute, int(time.time()), task_id),
+        )
+        db.commit()
+    when = "%02d:%02d" % (hour, minute)
+    record_audit(
+        user["username"],
+        user["role"],
+        "Saved a task",
+        subject=row["title"],
+        detail=("on" if enabled else "off") + " at " + when + " " + hub_zone_name(),
+    )
+    return web.json_response({"ok": True, "tasks": task_view()})
+
+
+async def api_task_run(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    task_id = (body.get("id") or "").strip()
+    with db_lock:
+        row = db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise web.HTTPBadRequest(text="that task does not exist")
+    try:
+        result = await run_task(task_id, user["username"], user["role"])
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    return web.json_response({"ok": True, "result": result, "tasks": task_view()})
+
+
+async def api_mail_test(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    cfg = load_config()
+    if not mail_ready(cfg):
+        raise web.HTTPBadRequest(text="save a mail server and a From address first")
+    recipient = (cfg.get("audit_email_to") or cfg.get("smtp_from") or "").strip()
+    name = instance_name(cfg)
+    sent = await deliver_mail(
+        recipient,
+        name + " mail test",
+        "This is a test from the " + name + " hub. Activity mail uses this same server.",
+    )
+    if not sent:
+        raise web.HTTPBadRequest(text="the test message was not sent")
+    record_audit(user["username"], user["role"], "Sent a mail test", subject=recipient)
+    return web.json_response({"ok": True, "notice": "Sent a test message to " + recipient})
 
 
 def install_cloudflared():
@@ -2262,20 +2969,24 @@ async def api_password(request):
     user = request_user(request)
     if user is None:
         raise web.HTTPUnauthorized()
+    if user["role"] != "admin":
+        raise web.HTTPForbidden(text="only an admin can change a password")
     body = await request.json()
     new_password = body.get("new") or ""
     if len(new_password) < 6:
         raise web.HTTPBadRequest(text="new password must be at least 6 characters")
     target_name = (body.get("username") or "").strip()
     drop_sessions = False
-    if target_name and (target_name != user["username"] or user["role"] == "admin"):
-        if user["role"] != "admin":
-            raise web.HTTPForbidden(text="only an admin can change another password")
+    close_id = None
+    if target_name and target_name != user["username"]:
         target = user_by_name(target_name)
         if target is None:
             raise web.HTTPBadRequest(text="that user does not exist")
+        if target["role"] != "user":
+            raise web.HTTPForbidden(text="change an admin password from My password")
         user_id = target["id"]
-        drop_sessions = target_name != user["username"]
+        drop_sessions = True
+        close_id = target["id"]
         log.info("password set for %s", target_name)
         audit_action = "Set a password"
         audit_subject = target_name
@@ -2301,6 +3012,8 @@ async def api_password(request):
         if drop_sessions:
             db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         db.commit()
+    if close_id is not None:
+        await close_user_sockets(close_id)
     record_audit(user["username"], user["role"], audit_action, subject=audit_subject)
     return web.json_response({"ok": True})
 
@@ -2320,6 +3033,7 @@ async def signal(request):
             {
                 "type": "devices",
                 "devices": device_snapshot(user),
+                "screen": screen_state(),
                 "iceServers": await ice_servers(audience),
             },
         )
@@ -2338,8 +3052,9 @@ async def signal(request):
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
     device_id = None
+    peer = clean_ip(request.remote or "")
     try:
-        device_id = await device_loop(ws)
+        device_id = await device_loop(ws, peer)
     finally:
         if device_id and devices.get(device_id, {}).get("ws") is ws:
             call_id = devices[device_id].get("call_id")
@@ -2351,7 +3066,7 @@ async def signal(request):
     return ws
 
 
-async def device_loop(ws):
+async def device_loop(ws, peer):
     device_id = None
     async for msg in ws:
         if msg.type != WSMsgType.TEXT:
@@ -2378,6 +3093,7 @@ async def device_loop(ws):
             }
             log.info("device online %s version %s", device_id, data.get("version"))
             remember_device(device_id)
+            note_device_ip(device_id, peer)
             await send_json(
                 ws,
                 {
@@ -2708,6 +3424,16 @@ async def hours_watch(_app):
         pass
 
 
+async def task_watch(_app):
+    task = asyncio.create_task(task_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def api_audit(request):
     user = request_user(request)
     if user is None or user["role"] != "admin":
@@ -2829,6 +3555,7 @@ async def screen_image(request):
 def make_app():
     app = web.Application(client_max_size=2 * 1024 * 1024, middlewares=[remember_client])
     app.cleanup_ctx.append(hours_watch)
+    app.cleanup_ctx.append(task_watch)
     app.add_routes(
         [
             web.get("/ping.json", ping),
@@ -2838,6 +3565,7 @@ def make_app():
             web.get("/calls", calls_page),
             web.get("/users", users_page),
             web.get("/devices", devices_page),
+            web.get("/settings", settings_page),
             web.get("/audit", audit_page),
             web.get("/schedule", schedule_page),
             web.get("/app.css", app_css),
@@ -2848,6 +3576,8 @@ def make_app():
             web.get("/api/devices", api_devices),
             web.get("/api/users", api_users),
             web.post("/api/users", api_create_user),
+            web.post("/api/users/delete", api_delete_user),
+            web.post("/api/guest", api_guest),
             web.post("/api/assign", api_assign),
             web.post("/api/account", api_account),
             web.post("/api/password", api_password),
@@ -2862,6 +3592,10 @@ def make_app():
             web.post("/api/screen/remove", api_screen_remove),
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
+            web.post("/api/mail/test", api_mail_test),
+            web.get("/api/tasks", api_tasks),
+            web.post("/api/tasks", api_task_save),
+            web.post("/api/tasks/run", api_task_run),
             web.post("/api/tunnel/install", api_tunnel_install),
             web.get("/api/audit", api_audit),
             web.get("/api/hours", api_hours),
