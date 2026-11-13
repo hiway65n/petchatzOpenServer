@@ -11,7 +11,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - Help shows the caller guide to everyone. The admin guide is added only while an admin is signed in.
 - The heading starts as the name OpenPetChatz. An admin can change the name, show a logo picture, or both, and can change the guest instruction text. That text can place the logo on the printout and in the guest email.
 - An admin can delete an account. The signed-in account stays, and at least one admin who can sign in has to remain.
-- An admin can create a guest sign-in for one camera, print the username and password, and email those instructions when mail is configured.
+- An admin can create a guest sign-in for one camera, print the username and password, and email those instructions when mail is configured. People then shows the username and when access ends. The password stays on the printout and in the email.
 - A daily task can delete guest accounts after their end date. Other accounts are deleted only when an admin does that by hand.
 - Activity can be emailed as it happens, either every entry or errors only.
 - An admin can filter hub actions by username and by camera name or id.

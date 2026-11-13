@@ -14,7 +14,7 @@ Delete account removes that person. The account you are signed in with cannot be
 
 A user cannot change a password. Set password, on that person's card, is how you change it. That signs them out. My password, at the bottom, is where you change the password for the admin account you are using. Type the current password first. Random password fills in 8 characters and shows them so you can copy them.
 
-Guest account is a short wizard. Choose one camera, the date access ends, and an email if you want one. The hub makes a username and password and opens a page you can print. If mail is saved on Settings, the same page is emailed. Those guest accounts are the only ones the cleanup task on Settings removes. Accounts you create with New account stay until you delete them.
+Guest account is a short wizard. Choose one camera, the date access ends, and an email if you want one. The hub makes a username and password and opens a page you can print. If mail is saved on Settings, the same page is emailed. People then shows the username and when access ends. The password stays on the printout and in the email. Those guest accounts are the only ones the cleanup task on Settings removes. Accounts you create with New account stay until you delete them.
 
 ## Devices
 

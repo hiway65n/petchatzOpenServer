@@ -40,11 +40,10 @@
       <div id="guest-step-email" class="hidden">
         <label for="guest-email">Email, optional</label>
         <input id="guest-email" type="email" autocomplete="off" placeholder="name@example.com">
-        <p class="sub">If you enter an address, and mail is set up on Settings, these instructions are emailed as well as shown here.</p>
+        <p class="sub">If you enter an address, and mail is set up on Settings, these instructions are emailed. The printed page still has the username and password.</p>
         <button id="guest-back-date" class="ghost" type="button">Back</button>
         <button id="guest-create" type="button">Create and print</button>
       </div>
-      <pre id="guest-slip" class="hidden"></pre>
       <p id="guest-msg"></p>
     </form>
     <form id="create-user" class="card">
@@ -424,24 +423,44 @@
       doc.title = title || "Guest sign-in";
       var slip = doc.getElementById("slip");
       var parts = String(text || "").split("{logo}");
+      var waiting = 0;
+      function printSlip() {
+        if (!win || win.closed) return;
+        win.focus();
+        setTimeout(function() {
+          if (!win.closed) win.print();
+        }, 50);
+      }
+      function imageReady() {
+        waiting -= 1;
+        if (waiting <= 0) printSlip();
+      }
+      function watchLogo(img) {
+        waiting += 1;
+        function done() {
+          if (img.getAttribute("data-ready")) return;
+          img.setAttribute("data-ready", "1");
+          if (img.decode) {
+            img.decode().then(imageReady, imageReady);
+          } else {
+            imageReady();
+          }
+        }
+        img.onload = done;
+        img.onerror = done;
+        img.src = "/logo";
+        if (img.complete) done();
+      }
       for (var i = 0; i < parts.length; i++) {
         slip.appendChild(doc.createTextNode(parts[i]));
         if (showLogo && i < parts.length - 1) {
           var img = doc.createElement("img");
-          img.src = "/logo";
           img.alt = title || "";
           slip.appendChild(img);
+          watchLogo(img);
         }
       }
-      win.focus();
-      win.print();
-    }
-
-    function guestNote(body) {
-      if (body.email_status === "sent") return "A copy was emailed to " + body.email + ".";
-      if (body.email_status === "not configured") return "No email was sent. Add a mail server on Settings.";
-      if (body.email_status === "failed") return "The account was created, but the email could not be sent.";
-      return "Print this page before you leave. The password is not shown again.";
+      if (waiting === 0) printSlip();
     }
 
     document.getElementById("guest-wizard").onsubmit = function(event) {
@@ -495,11 +514,9 @@
           return;
         }
         r.json().then(function(body) {
-          var slip = document.getElementById("guest-slip");
-          slip.textContent = body.instructions;
-          slip.className = "";
           writeSlip(slipWindow, body.instructions, body.title, body.logo);
-          document.getElementById("guest-msg").textContent = "Guest account " + body.username + " is ready. " + guestNote(body);
+          var when = body.expires_at ? new Date(body.expires_at * 1000).toLocaleString() : "";
+          document.getElementById("guest-msg").textContent = "User " + body.username + " was created." + (when ? " Access ends " + when + "." : "");
           document.getElementById("guest-email").value = "";
           guestShow("");
           loadPeople();
