@@ -46,6 +46,7 @@ Restarting the hub drops live calls. It does not reboot the device. If `device.h
 | `/opt/petchatz-hub/turn.conf` | coturn config, including the TURN password |
 | `/opt/petchatz-hub/hub.db` | Accounts, sessions, camera settings, operating windows, treat and scent counts, and the activity log. Mode 600 |
 | `/opt/petchatz-hub/screen-ready.jpg` and `screen-closed.jpg` | Optional idle pictures from the Devices page. Missing files mean the camera shows text |
+| `/opt/petchatz-hub/logo.img` | Optional logo from Settings. Missing means the page name is text |
 
 `hub/config.example.json` shows the keys only. Do not copy a live `config.json` into git. Leave `timezone` empty to use the hub's own clock. An admin can set a house time zone, such as `America/Chicago`, on the Schedule page. That value is what operating windows use.
 

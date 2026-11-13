@@ -6,6 +6,8 @@ body {
 }
 main { max-width: 880px; margin: 0 auto; padding: 28px 18px 48px; }
 h1 { font-weight: 650; letter-spacing: 0.02em; margin: 0 0 6px; font-size: 1.6rem; }
+h1.logo { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.logo-img { display: block; max-height: 64px; max-width: 240px; width: auto; height: auto; object-fit: contain; }
 h2 { font-size: 1.15rem; margin: 18px 0 8px; }
 .sub { color: #9aabbd; margin: 0 0 22px; }
 .guide h3 { font-size: 1rem; margin: 16px 0 6px; }

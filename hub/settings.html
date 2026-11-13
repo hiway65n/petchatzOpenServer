@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <h1>{{name}}</h1>
+    <h1 class="logo">{{logo}}</h1>
     <nav class="nav">
       <a href="/calls">Calls</a>
       <a href="/users">People</a>
@@ -22,14 +22,26 @@
     </nav>
     <p class="sub">The name, guest instructions, how people open the page, relays, mail, and tasks. <a href="/help#settings">Guide</a></p>
     <form id="brand" class="card">
-      <h2>Name</h2>
-      <label for="instance-name">Name on the pages</label>
+      <h2>Name and logo</h2>
+      <label for="instance-name">Name</label>
       <input id="instance-name" maxlength="40" autocomplete="off">
-      <p class="sub">Shown at the top of each page, on the guest printout, and in email. Leave this blank to use OpenPetChatz.</p>
+      <p class="sub">Leave this blank to use OpenPetChatz. The browser tab uses this name. The top of each page can show the name, a picture, or both.</p>
+      <label for="logo-show">Top of each page</label>
+      <select id="logo-show">
+        <option value="text">Name only</option>
+        <option value="image">Logo only</option>
+        <option value="both">Logo and name</option>
+      </select>
+      <img id="logo-preview" class="logo-img hidden" alt="">
+      <label for="logo-file">Logo picture</label>
+      <input id="logo-file" type="file" accept="image/png,image/jpeg,image/gif">
+      <p class="sub">PNG, JPEG, or GIF, up to 512 KB. A wide picture is scaled to fit. Without a picture, the name is shown. Put {logo} in the guest instructions where that picture should appear on the printout and in the email.</p>
+      <button id="logo-upload" class="ghost" type="button">Save logo</button>
+      <button id="logo-remove" class="ghost" type="button">Remove logo</button>
       <h2>Guest instructions</h2>
       <label for="guest-template">Text for the printed page and the email</label>
       <textarea id="guest-template"></textarea>
-      <p class="sub">{name}, {camera}, {expires}, {address}, {username}, and {password} are filled in when the guest account is created. {address} is the public web address, or a blank line when that name is not set. The instructions need {username} and {password}.</p>
+      <p class="sub">{name}, {logo}, {camera}, {expires}, {address}, {username}, and {password} are filled in when the guest account is created. {logo} is the picture, on the printout and in the email. {address} is the public web address, or a blank line when that name is not set. The instructions need {username} and {password}.</p>
       <button type="submit">Save name and instructions</button>
       <button id="guest-template-reset" class="ghost" type="button">Restore the starting text</button>
       <p id="brand-msg"></p>
@@ -181,6 +193,16 @@
       document.getElementById("audit-email").value = body.audit_email === "all" || body.audit_email === "errors" ? body.audit_email : "off";
       document.getElementById("audit-email-to").value = body.audit_email_to || "";
       document.getElementById("instance-name").value = body.instance_name || "";
+      document.getElementById("logo-show").value = body.logo_show === "image" || body.logo_show === "both" ? body.logo_show : "text";
+      var preview = document.getElementById("logo-preview");
+      if (body.logo_set) {
+        preview.src = "/logo?v=" + Date.now();
+        preview.className = "logo-img";
+      } else {
+        preview.removeAttribute("src");
+        preview.className = "logo-img hidden";
+      }
+      document.getElementById("logo-remove").className = body.logo_set ? "ghost" : "ghost hidden";
       document.getElementById("guest-template").value = body.guest_template || "";
       guestTemplateDefault = body.guest_template_default || "";
       var install = document.getElementById("install-cloudflared");
@@ -409,6 +431,7 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
           instance_name: document.getElementById("instance-name").value,
+          logo_show: document.getElementById("logo-show").value,
           guest_template: document.getElementById("guest-template").value
         })
       }).then(function(r) {
@@ -428,6 +451,38 @@
     document.getElementById("guest-template-reset").onclick = function() {
       document.getElementById("guest-template").value = guestTemplateDefault;
       document.getElementById("brand-msg").textContent = "Starting text restored in the box. Save to keep it.";
+    };
+
+    document.getElementById("logo-upload").onclick = function() {
+      var file = document.getElementById("logo-file").files[0];
+      if (!file) {
+        document.getElementById("brand-msg").textContent = "Choose a PNG, JPEG, or GIF.";
+        return;
+      }
+      var data = new FormData();
+      data.append("image", file);
+      fetch("/api/logo", {method: "POST", body: data}).then(function(r) {
+        if (!r.ok) {
+          say("brand-msg", r, "");
+          return;
+        }
+        document.getElementById("logo-file").value = "";
+        document.getElementById("brand-msg").textContent = "Logo saved. Refresh open pages to see it.";
+        loadSettings();
+      }).catch(function() {
+        document.getElementById("brand-msg").textContent = "The logo was not saved.";
+      });
+    };
+
+    document.getElementById("logo-remove").onclick = function() {
+      fetch("/api/logo/remove", {method: "POST"}).then(function(r) {
+        if (!r.ok) {
+          say("brand-msg", r, "");
+          return;
+        }
+        document.getElementById("brand-msg").textContent = "Logo removed.";
+        loadSettings();
+      });
     };
   </script>
 </body>

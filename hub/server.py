@@ -45,6 +45,7 @@ SCENT_SECONDS = 10
 TASK_DELETE_GUESTS = "delete-expired-guests"
 GUEST_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 DEFAULT_INSTANCE_NAME = "OpenPetChatz"
+LOGO_PATH = os.path.join(BASE, "logo.img")
 DEFAULT_GUEST_TEMPLATE = """You can call one camera: {camera}
 This account stops at {expires}.
 
@@ -753,7 +754,7 @@ def smtp_port_value(cfg):
     return 587
 
 
-def send_mail(cfg, recipient, subject, body):
+def send_mail(cfg, recipient, subject, body, html=None, logo=None):
     host = (cfg.get("smtp_host") or "").strip()
     sender = (cfg.get("smtp_from") or "").strip()
     if not host or not sender:
@@ -770,6 +771,10 @@ def send_mail(cfg, recipient, subject, body):
     message["To"] = recipient
     message["Subject"] = subject
     message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
+        if logo:
+            message.get_payload()[-1].add_related(logo[0], "image", logo[1], cid="logo")
     if security == "ssl":
         client = smtplib.SMTP_SSL(host, port, timeout=30)
     else:
@@ -790,10 +795,10 @@ def send_mail(cfg, recipient, subject, body):
             pass
 
 
-async def deliver_mail(recipient, subject, body):
+async def deliver_mail(recipient, subject, body, html=None, logo=None):
     try:
         await asyncio.get_running_loop().run_in_executor(
-            None, send_mail, load_config(), recipient, subject, body
+            None, send_mail, load_config(), recipient, subject, body, html, logo
         )
     except Exception as exc:
         log.warning("mail to %s failed: %s", recipient, exc)
@@ -848,6 +853,51 @@ def instance_name(cfg=None):
     return name or DEFAULT_INSTANCE_NAME
 
 
+def logo_show(cfg=None):
+    if cfg is None:
+        cfg = load_config()
+    show = (cfg.get("logo_show") or "text").strip()
+    if show not in ("text", "image", "both"):
+        return "text"
+    return show
+
+
+def logo_kind(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "gif"
+    raise ValueError("use a PNG, JPEG, or GIF")
+
+
+def read_logo():
+    try:
+        with open(LOGO_PATH, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if not data or len(data) > 512 * 1024:
+        return None
+    try:
+        kind = logo_kind(data)
+    except ValueError:
+        return None
+    return data, kind
+
+
+def logo_markup():
+    name = html_text(instance_name())
+    show = logo_show()
+    if read_logo() is None or show == "text":
+        return '<span class="logo-text">%s</span>' % name
+    image = '<img class="logo-img" src="/logo" alt="%s">' % name
+    if show == "image":
+        return image
+    return image + '<span class="logo-text">%s</span>' % name
+
+
 def guest_template_text(cfg):
     text = cfg.get("guest_template")
     if text is None or not str(text).strip():
@@ -865,7 +915,8 @@ def html_text(value):
 
 
 def branded_html(name):
-    return read_html(name).replace("{{name}}", html_text(instance_name()))
+    text = read_html(name)
+    return text.replace("{{logo}}", logo_markup()).replace("{{name}}", html_text(instance_name()))
 
 
 def clean_instance_name(value):
@@ -875,6 +926,13 @@ def clean_instance_name(value):
     if len(text) > 40 or any(ord(ch) < 32 for ch in text):
         raise ValueError("the name must be 40 characters or less")
     return text
+
+
+def clean_logo_show(value):
+    show = (value or "text").strip()
+    if show not in ("text", "image", "both"):
+        raise ValueError("choose the name, the logo, or both")
+    return show
 
 
 def clean_guest_template(value):
@@ -913,6 +971,26 @@ def guest_instructions(cfg, username, password, camera, when):
     for key, value in values.items():
         text = text.replace("{" + key + "}", value)
     return text
+
+
+def guest_html(cfg, username, password, camera, when):
+    values = {
+        "name": html_text(instance_name(cfg)),
+        "camera": html_text(camera),
+        "expires": html_text(when),
+        "address": html_text(address_block(cfg)),
+        "username": html_text(username),
+        "password": html_text(password),
+        "logo": '<img src="cid:logo" alt="%s" style="max-height:72px;max-width:240px">' % html_text(instance_name(cfg)),
+    }
+    text = html_text(guest_template_text(cfg))
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    return (
+        "<div style=\"font-family:Georgia,serif;font-size:16px;line-height:1.45;white-space:pre-wrap\">"
+        + text
+        + "</div>"
+    )
 
 
 def visit_address(cfg):
@@ -1828,12 +1906,27 @@ async def api_guest(request):
     when = format_when(datetime.fromtimestamp(expires_at, hub_zone()))
     cfg = load_config()
     instructions = guest_instructions(cfg, username, password, camera, when)
+    has_logo = read_logo() is not None
+    if not has_logo:
+        instructions = instructions.replace("{logo}", "")
     email_status = "not requested"
     if email:
         if not mail_ready(cfg):
             email_status = "not configured"
         else:
-            sent = await deliver_mail(email, "Your " + instance_name(cfg) + " sign-in", instructions)
+            plain = instructions.replace("{logo}", "")
+            html = None
+            logo = None
+            if has_logo and "{logo}" in guest_template_text(cfg):
+                html = guest_html(cfg, username, password, camera, when)
+                logo = read_logo()
+            sent = await deliver_mail(
+                email,
+                "Your " + instance_name(cfg) + " sign-in",
+                plain,
+                html,
+                logo,
+            )
             email_status = "sent" if sent else "failed"
     detail = "camera " + camera + ", ends " + when
     if email_status == "sent":
@@ -1855,6 +1948,7 @@ async def api_guest(request):
             "email_status": email_status,
             "instructions": instructions,
             "title": instance_name(cfg) + " guest sign-in",
+            "logo": has_logo and "{logo}" in guest_template_text(cfg),
         }
     )
 
@@ -2267,6 +2361,8 @@ def settings_view(cfg):
         "audit_email_to": cfg.get("audit_email_to") or "",
         "mail_ready": mail_ready(cfg),
         "instance_name": instance_name(cfg),
+        "logo_show": logo_show(cfg),
+        "logo_set": read_logo() is not None,
         "guest_template": guest_template_text(cfg),
         "guest_template_default": DEFAULT_GUEST_TEMPLATE,
     }
@@ -2367,7 +2463,7 @@ async def api_settings_save(request):
             "audit_email_to",
         )
     )
-    touch_brand = any(key in body for key in ("instance_name", "guest_template"))
+    touch_brand = any(key in body for key in ("instance_name", "guest_template", "logo_show"))
     if touch_mail:
         try:
             smtp_host = clean_public_host(body.get("smtp_host")) if "smtp_host" in body else (cfg.get("smtp_host") or "")
@@ -2415,6 +2511,8 @@ async def api_settings_save(request):
         try:
             if "instance_name" in body:
                 cfg["instance_name"] = clean_instance_name(body.get("instance_name"))
+            if "logo_show" in body:
+                cfg["logo_show"] = clean_logo_show(body.get("logo_show"))
             if "guest_template" in body:
                 cfg["guest_template"] = clean_guest_template(body.get("guest_template"))
         except ValueError as exc:
@@ -3495,6 +3593,58 @@ async def api_audit(request):
     return web.json_response({"entries": [dict(row) for row in rows]})
 
 
+async def logo_image(_request):
+    logo = read_logo()
+    if logo is None:
+        raise web.HTTPNotFound()
+    data, kind = logo
+    return web.Response(
+        body=data,
+        content_type="image/" + kind,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+async def api_logo_save(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "image":
+        raise web.HTTPBadRequest(text="choose a PNG, JPEG, or GIF")
+    chunks = bytearray()
+    while True:
+        piece = await field.read_chunk(65536)
+        if not piece:
+            break
+        chunks.extend(piece)
+        if len(chunks) > 512 * 1024:
+            raise web.HTTPBadRequest(text="use a picture no larger than 512 KB")
+    data = bytes(chunks)
+    try:
+        logo_kind(data)
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    temporary = LOGO_PATH + ".tmp"
+    with open(temporary, "wb") as fh:
+        fh.write(data)
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, LOGO_PATH)
+    record_audit(user["username"], user["role"], "Saved the logo")
+    return web.json_response({"ok": True, "logo_set": True})
+
+
+async def api_logo_remove(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    if os.path.isfile(LOGO_PATH):
+        os.remove(LOGO_PATH)
+    record_audit(user["username"], user["role"], "Removed the logo")
+    return web.json_response({"ok": True, "logo_set": False})
+
+
 async def api_screen(request):
     user = request_user(request)
     if user is None or user["role"] != "admin":
@@ -3578,6 +3728,7 @@ def make_app():
             web.get("/", login_page),
             web.get("/calls", calls_page),
             web.get("/help", help_page),
+            web.get("/logo", logo_image),
             web.get("/users", users_page),
             web.get("/devices", devices_page),
             web.get("/settings", settings_page),
@@ -3608,6 +3759,8 @@ def make_app():
             web.get("/api/settings", api_settings),
             web.post("/api/settings", api_settings_save),
             web.post("/api/mail/test", api_mail_test),
+            web.post("/api/logo", api_logo_save),
+            web.post("/api/logo/remove", api_logo_remove),
             web.get("/api/tasks", api_tasks),
             web.post("/api/tasks", api_task_save),
             web.post("/api/tasks/run", api_task_run),

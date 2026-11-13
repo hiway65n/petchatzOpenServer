@@ -8,7 +8,7 @@
 </head>
 <body>
   <main class="guide">
-    <h1>{{name}}</h1>
+    <h1 class="logo">{{logo}}</h1>
     <nav class="nav">
       <a href="/calls">Calls</a>
       <a class="admin-only hidden" href="/users">People</a>
@@ -66,8 +66,8 @@
     <p>Sign-ins, calls, treats, scent, and changes. Filter by a username, a camera, or both. Each entry includes the address the person connected from. Passwords are never written here. The newest 10,000 entries are kept.</p>
 
     <h3 id="settings">Settings</h3>
-    <p>Name is the title on the pages, on the guest printout, and in email. Leave it blank to keep OpenPetChatz.</p>
-    <p>Guest instructions are the printed page and the email. <code>{name}</code>, <code>{camera}</code>, <code>{expires}</code>, <code>{address}</code>, <code>{username}</code>, and <code>{password}</code> are filled in for each guest. The text has to keep <code>{username}</code> and <code>{password}</code>. Restore the starting text puts the original wording back. Save to keep it.</p>
+    <p>Name is the title on the pages, on the guest printout, and in email. Leave it blank to keep OpenPetChatz. The top of each page can show that name, a logo picture, or both.</p>
+    <p>Guest instructions are the printed page and the email. <code>{name}</code>, <code>{logo}</code>, <code>{camera}</code>, <code>{expires}</code>, <code>{address}</code>, <code>{username}</code>, and <code>{password}</code> are filled in for each guest. <code>{logo}</code> is the saved picture. The text has to keep <code>{username}</code> and <code>{password}</code>. Restore the starting text puts the original wording back. Save to keep it.</p>
     <p>How people open the page is a web address you publish, or a Cloudflare Tunnel. The tunnel carries the page only. Calls still need a relay. Leave this hub's relay on for calls inside the house, and add one cloud relay when callers are away. After a key or token is saved, the page shows only its last four characters.</p>
     <p>Mail sends the guest sign-in and, if you turn it on, activity. Activity mail can be off, errors only, or every activity. Those messages do not include passwords. The guest email does. Send a test checks the server.</p>
     <p>Tasks run once a day at the time you choose, in the house time zone. Delete expired guest accounts is off until you turn it on. Run now does it immediately. Other accounts are not removed by that task.</p>

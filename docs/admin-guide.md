@@ -40,9 +40,9 @@ This is the record of sign-ins, calls, treats, scent, and changes. Filter by a u
 
 ## Settings
 
-Name is the title on the pages, on the guest printout, and in email. Leave it blank to keep OpenPetChatz.
+Name is the title on the pages, on the guest printout, and in email. Leave it blank to keep OpenPetChatz. The top of each page can show that name, a logo picture, or both.
 
-Guest instructions are the text of the printed page and the email. `{name}`, `{camera}`, `{expires}`, `{address}`, `{username}`, and `{password}` are filled in for each guest. The text has to keep `{username}` and `{password}`. Restore the starting text puts the original wording back in the box. Save to keep it.
+Guest instructions are the text of the printed page and the email. `{name}`, `{logo}`, `{camera}`, `{expires}`, `{address}`, `{username}`, and `{password}` are filled in for each guest. `{logo}` is the saved picture. The text has to keep `{username}` and `{password}`. Restore the starting text puts the original wording back in the box. Save to keep it.
 
 How people open the page is either a web address you publish or a Cloudflare Tunnel. The tunnel carries the page only. Calls still need a relay. Leave this hub's relay on for calls inside the house, and add one cloud relay when callers are away. Keys and the tunnel token are stored on the hub. After one is saved, the page shows only its last four characters.
 

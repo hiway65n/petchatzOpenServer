@@ -8,7 +8,7 @@
 </head>
 <body>
   <main>
-    <h1>{{name}}</h1>
+    <h1 class="logo">{{logo}}</h1>
     <nav class="nav">
       <a href="/calls">Calls</a>
       <a class="here" href="/users">People</a>
@@ -414,15 +414,25 @@
       select.value = current;
     }
 
-    function writeSlip(win, text, title) {
+    function writeSlip(win, text, title, showLogo) {
       if (!win || win.closed) return;
       var doc = win.document;
       doc.open();
-      doc.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Guest sign-in</title><style>body{font-family:Georgia,serif;margin:40px;color:#111}h1{font-size:22px}pre{white-space:pre-wrap;font-family:Georgia,serif;font-size:16px;line-height:1.45}.noprint{margin-top:24px}button{font-size:16px;padding:8px 16px}@media print{.noprint{display:none}}</style></head><body><h1 id='title'></h1><pre id='slip'></pre><p class='noprint'><button type='button' onclick='print()'>Print</button></p></body></html>");
+      doc.write("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Guest sign-in</title><style>body{font-family:Georgia,serif;margin:40px;color:#111}h1{font-size:22px}#slip{white-space:pre-wrap;font-family:Georgia,serif;font-size:16px;line-height:1.45}#slip img{max-height:72px;max-width:240px;display:block;margin:8px 0}.noprint{margin-top:24px}button{font-size:16px;padding:8px 16px}@media print{.noprint{display:none}}</style></head><body><h1 id='title'></h1><div id='slip'></div><p class='noprint'><button type='button' onclick='print()'>Print</button></p></body></html>");
       doc.close();
       doc.getElementById("title").textContent = title || "Guest sign-in";
       doc.title = title || "Guest sign-in";
-      doc.getElementById("slip").textContent = text;
+      var slip = doc.getElementById("slip");
+      var parts = String(text || "").split("{logo}");
+      for (var i = 0; i < parts.length; i++) {
+        slip.appendChild(doc.createTextNode(parts[i]));
+        if (showLogo && i < parts.length - 1) {
+          var img = doc.createElement("img");
+          img.src = "/logo";
+          img.alt = title || "";
+          slip.appendChild(img);
+        }
+      }
       win.focus();
       win.print();
     }
@@ -488,7 +498,7 @@
           var slip = document.getElementById("guest-slip");
           slip.textContent = body.instructions;
           slip.className = "";
-          writeSlip(slipWindow, body.instructions, body.title);
+          writeSlip(slipWindow, body.instructions, body.title, body.logo);
           document.getElementById("guest-msg").textContent = "Guest account " + body.username + " is ready. " + guestNote(body);
           document.getElementById("guest-email").value = "";
           guestShow("");
