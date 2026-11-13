@@ -1,6 +1,6 @@
 # User's guide
 
-This is the short guide for someone who calls a camera. On the hub, Help shows only this page unless an admin is signed in. An admin also sees [admin-guide.md](admin-guide.md) on that same Help page. The name at the top of the pages is OpenPetChatz until an admin changes it.
+This is the short guide for someone who calls a camera. On the hub, Help shows only this page unless an admin is signed in. An admin also sees [admin-guide.md](admin-guide.md) on that same Help page. The heading starts as OpenPetChatz until an admin changes it. It can be that name, a picture, or both.
 
 ## For people who call
 

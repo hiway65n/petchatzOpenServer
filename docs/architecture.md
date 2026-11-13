@@ -56,6 +56,7 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /` | Sign-in page |
 | `GET /calls` | Call page for a signed-in person |
 | `GET /help` | Caller guide. An admin who is signed in also receives the admin sections. Anyone else does not |
+| `GET /logo` | Saved logo picture. Anyone can load it. Missing until an admin saves one |
 | `GET /users`, `GET /devices`, `GET /schedule`, `GET /audit`, `GET /settings` | Admin pages. Anyone else is sent back to Calls |
 | `POST /login`, `POST /logout`, `GET /api/session` | Session cookie `sid` |
 | `GET /api/devices` | Cameras for this session |
@@ -69,6 +70,7 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /api/hours`, `POST /api/hours`, `POST /api/hours/remove`, `POST /api/hours/limits`, `POST /api/hours/timezone` | Admin. Operating windows, daily treat and scent limits, and the house time zone |
 | `GET /api/settings`, `POST /api/settings` | Admin. Public name, tunnel, relays, and the mail server. Secrets are not returned, only whether one is saved and its last four characters |
 | `POST /api/mail/test` | Admin. Sends one test message after mail is saved |
+| `POST /api/logo`, `POST /api/logo/remove` | Admin. Save or remove the PNG, JPEG, or GIF used as the heading and in guest mail |
 | `GET /api/tasks`, `POST /api/tasks`, `POST /api/tasks/run` | Admin. Daily tasks. The built-in task deletes expired guest accounts |
 | `GET /api/audit` | Admin. Newest hub actions, filtered with `username` and `device` |
 | `GET /api/screen`, `POST /api/screen`, `POST /api/screen/remove` | Admin. Upload or remove the JPEG shown on every camera while it is ready, and the JPEG shown while it is out of service |
@@ -81,7 +83,7 @@ The `hours` table stores operating windows for a camera: `allow` or `deny`, `wee
 
 The `audit` table records hub actions: who did it, the address they connected from, the action, a camera id and the name it had then, an optional subject (another account, or a camera address), and a short detail. The password itself is not stored. Rows older than the newest 10,000 are deleted as new ones are written. When activity mail is errors only or every activity, the hub emails that same record. The guest sign-in message is a separate email and is the one that contains the new password.
 
-A guest account is a user with `source` `wizard`, one camera, an end date, and an optional email. The password is hashed the same way as any other account. The printed page and the email use the guest instruction text from Settings. That text can include `{name}`, `{camera}`, `{expires}`, `{address}`, `{username}`, and `{password}`. Until an admin changes it, the hub uses its starting text. The name at the top of each page is `instance_name` in `config.json`, and it is OpenPetChatz until one is saved. That heading can be the name, a logo picture stored on the hub, or both. `{logo}` in the guest instructions places that picture on the printout and in the email. The `tasks` table holds the daily job that deletes those accounts after the end date. It does not delete any other account. Mail server settings stay in `config.json` with the other secrets.
+A guest account is a user with `source` `wizard`, one camera, an end date, and an optional email. The password is hashed the same way as any other account. The printed page and the email use the guest instruction text from Settings. That text can include `{name}`, `{logo}`, `{camera}`, `{expires}`, `{address}`, `{username}`, and `{password}`. Until an admin changes it, the hub uses its starting text. The name at the top of each page is `instance_name` in `config.json`, and it is OpenPetChatz until one is saved. That heading can be the name, a logo picture stored on the hub, or both. `{logo}` in the guest instructions places that picture on the printout and in the email. The `tasks` table holds the daily job that deletes those accounts after the end date. It does not delete any other account. Mail server settings stay in `config.json` with the other secrets.
 
 When Settings uses a Cloudflare Tunnel, the hub runs one `cloudflared`. As a service rewrites `cloudflared.service` and restarts it, including a service created with `cloudflared service install`. Standalone rewrites `petchatz-tunnel` instead. Saving stops the other unit and any extra `cloudflared` process, then checks that one remains. Turning the tunnel off stops both. The token is in a root-only file and is not placed on the command line. See [off-lan.md](off-lan.md).
 

@@ -4,7 +4,7 @@ I created this for some friends who have a bunch of these petchatz devices and w
 
 # PetChatz on-premises hub
 
-This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. The name at the top of the pages is OpenPetChatz until an admin changes it. An admin can call any device that is online. A normal user can call only the cameras assigned to them, and sees only the Calls page.
+This is a local replacement for the original PetChatz cloud (`api2.petchatz.com`). A device that can no longer reach that cloud places audio and video calls through a small hub on the same network. People sign in with a browser. The heading starts as OpenPetChatz. An admin can change that name, replace it with a logo, or show both. An admin can call any device that is online. A normal user can call only the cameras assigned to them, and sees only the Calls page.
 
 Calls work on the local network. From outside the house, the page can go through a reverse proxy or a Cloudflare Tunnel, and the audio and video relay can be this hub's TURN server or a Metered or Cloudflare TURN service. Rough edges that are still open are listed in [docs/status.md](docs/status.md). Do not put live passwords, TURN credentials, private keys, or the hub database in git.
 
@@ -32,7 +32,7 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/calls.html` | Call page for a person |
 | `hub/users.html` | Accounts, guest sign-in, access, expiration, and deleting an account |
 | `hub/devices.html` | Camera settings, last address, removal, treats, scent, idle pictures, and one-step setup |
-| `hub/settings.html` | Page name, guest instructions, public name, Cloudflare Tunnel, call relays, mail, and scheduled tasks |
+| `hub/settings.html` | Page name, logo, guest instructions, public name, Cloudflare Tunnel, call relays, mail, and scheduled tasks |
 | `hub/schedule.html` | Operating hours and daily treat and scent limits |
 | `hub/audit.html` | Admin activity log, with username and camera filters |
 | `hub/help.html` | Caller guide, plus the admin guide when an admin is signed in |
