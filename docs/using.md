@@ -1,5 +1,7 @@
 # Using the hub
 
+People who call should start with [guide.md](guide.md). Admins should start with [admin-guide.md](admin-guide.md). On the hub, Help shows the caller guide to everyone else, and adds the admin guide only while an admin is signed in. This page is the operator detail behind those pages.
+
 Open `https://<hub-ip>/` and accept the certificate warning. That is the sign-in page. After sign-in the browser goes to Calls.
 
 ## Pages

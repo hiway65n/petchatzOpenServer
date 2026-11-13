@@ -8,6 +8,11 @@ main { max-width: 880px; margin: 0 auto; padding: 28px 18px 48px; }
 h1 { font-weight: 650; letter-spacing: 0.02em; margin: 0 0 6px; font-size: 1.6rem; }
 h2 { font-size: 1.15rem; margin: 18px 0 8px; }
 .sub { color: #9aabbd; margin: 0 0 22px; }
+.guide h3 { font-size: 1rem; margin: 16px 0 6px; }
+.guide p, .guide li { line-height: 1.45; }
+.guide a, .sub a { color: #9ec1ff; }
+.guide ol { margin: 0 0 16px; padding-left: 1.3em; }
+.guide code { color: #f4f7fb; }
 .screen-preview { width: 160px; height: 120px; object-fit: cover; background: #101820; border-radius: 8px; margin: 0 0 10px; display: block; }
 form, section, .card {
   background: #223140; border-radius: 14px; padding: 16px;

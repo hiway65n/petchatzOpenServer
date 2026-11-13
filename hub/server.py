@@ -1549,6 +1549,20 @@ async def login_page(_request):
     return page("login.html", "text/html")
 
 
+async def help_page(request):
+    user = request_user(request)
+    text = branded_html("help.html")
+    if user is None or user["role"] != "admin":
+        text = re.sub(r"<!-- admin-help:start -->.*?<!-- admin-help:end -->", "", text, count=1, flags=re.S)
+        text = re.sub(r'<a class="admin-only hidden" href="[^"]*">[^<]*</a>\s*', "", text)
+        text = re.sub(r'<p class="sub admin-only hidden">.*?</p>\s*', "", text, count=1, flags=re.S)
+    return web.Response(
+        text=text,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def calls_page(_request):
     return page("calls.html", "text/html")
 
@@ -3563,6 +3577,7 @@ def make_app():
             web.get("/petchatzDevice2.html", device_page),
             web.get("/", login_page),
             web.get("/calls", calls_page),
+            web.get("/help", help_page),
             web.get("/users", users_page),
             web.get("/devices", devices_page),
             web.get("/settings", settings_page),

@@ -18,7 +18,7 @@ Calls work on the local network. From outside the house, the page can go through
 
 1. [Install the hub](docs/install.md).
 2. [Set up the device](docs/device.md). Install the watchdog drop-in first, then point the kiosk at the hub. Skipping the drop-in makes the board reboot about every four minutes.
-3. [Sign in and call](docs/using.md).
+3. [Sign in and call](docs/using.md). Callers use [docs/guide.md](docs/guide.md). Admins use [docs/admin-guide.md](docs/admin-guide.md). Help on the hub shows the caller guide unless an admin is signed in.
 4. When a call works on the LAN, [open it to the outside](docs/off-lan.md). One path is a reverse proxy plus a TURN port forward. The other is a Cloudflare Tunnel for the page and Metered or Cloudflare TURN for the call, which does not need those inbound ports.
 
 The design of the call path is in [docs/architecture.md](docs/architecture.md). What was learned about delay and one-way media is in [docs/call-quality.md](docs/call-quality.md).
@@ -35,6 +35,7 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/settings.html` | Page name, guest instructions, public name, Cloudflare Tunnel, call relays, mail, and scheduled tasks |
 | `hub/schedule.html` | Operating hours and daily treat and scent limits |
 | `hub/audit.html` | Admin activity log, with username and camera filters |
+| `hub/help.html` | Caller guide, plus the admin guide when an admin is signed in |
 | `hub/device.html` | Page the device kiosk loads. It places the call and shows Ready, Out of service, or an idle picture |
 | `hub/petchatz-hub.service` | systemd unit |
 | `hub/config.example.json` | Shape of the config file created at install |

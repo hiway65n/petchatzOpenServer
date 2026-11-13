@@ -31,7 +31,7 @@ Open `https://<hub-ip>/` from another computer on the LAN and accept the certifi
 
 ```bash
 sudo apt-get install -y sshpass
-sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/settings.html hub/schedule.html hub/audit.html hub/app.css hub/common.js /opt/petchatz-hub/
+sudo cp hub/server.py hub/device.html hub/login.html hub/calls.html hub/users.html hub/devices.html hub/settings.html hub/schedule.html hub/audit.html hub/help.html hub/app.css hub/common.js /opt/petchatz-hub/
 sudo systemctl restart petchatz-hub
 ```
 

@@ -55,6 +55,7 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `GET /petchatzDevice2.html` | Device call page |
 | `GET /` | Sign-in page |
 | `GET /calls` | Call page for a signed-in person |
+| `GET /help` | Caller guide. An admin who is signed in also receives the admin sections. Anyone else does not |
 | `GET /users`, `GET /devices`, `GET /schedule`, `GET /audit`, `GET /settings` | Admin pages. Anyone else is sent back to Calls |
 | `POST /login`, `POST /logout`, `GET /api/session` | Session cookie `sid` |
 | `GET /api/devices` | Cameras for this session |

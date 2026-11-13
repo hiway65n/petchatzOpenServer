@@ -8,6 +8,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 
 - The device finds the hub, comes online, and stays registered.
 - Sign-in, separate Calls, People, Devices, Schedule, Activity, and Settings pages, and choosing which cameras each user can call. A user sees only Calls.
+- Help shows the caller guide to everyone. The admin guide is added only while an admin is signed in.
 - The name at the top of the pages starts as OpenPetChatz. An admin can change it, and can change the guest instruction text.
 - An admin can delete an account. The signed-in account stays, and at least one admin who can sign in has to remain.
 - An admin can create a guest sign-in for one camera, print the username and password, and email those instructions when mail is configured.
