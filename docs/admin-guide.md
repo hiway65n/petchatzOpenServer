@@ -18,9 +18,9 @@ Guest account is a short wizard. Choose one camera, the date access ends, and an
 
 ## Devices
 
-Name each camera and set its picture size, frame rate, echo cancellation, and noise suppression. The line under a camera is its id and the last address it used to reach the hub.
+Name each camera. Picture size is Custom, 480p, or 720p. Custom is the default and keeps the width and height boxes. 480p is 640 by 480. 720p is 1280 by 720. A saved 480p or 720p stays selected. Any other size stays on Custom. Frame rate, echo cancellation, and noise suppression are on the same card. The line under a camera is its id and the last address it used to reach the hub. 320 by 240 at 12 frames per second is the safe starting point.
 
-Deploy to this camera uses that camera's address on the home network. It installs the watchdog change, points the camera at the hub, and reloads its screen. The camera must still use the empty root password it shipped with. A camera that is already set up is left running.
+Set up a camera is at the bottom of Devices. Scan the home network lists cameras that still accept the empty root password, and marks one that already points at this hub. Set up one camera, or several at once. You can also type an address. Setup installs the watchdog change, points the camera at the hub, and reloads its screen. A camera that is already set up is left running. A bar shows how far a scan or setup has gone.
 
 Treat dispenser and Scent start off. Turn one on and save, and Calls shows that button for that camera. One scent press runs the fan for about 10 seconds.
 

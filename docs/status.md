@@ -16,7 +16,7 @@ This is a working on-premises hub. Calls work on the LAN, and from outside the h
 - Activity can be emailed as it happens, either every entry or errors only.
 - An admin can filter hub actions by username and by camera name or id.
 - Accounts can be turned off or given an end time. An open Calls page for that account is closed.
-- An admin can send the watchdog change and the hub address to a camera from Devices.
+- An admin can send the watchdog change and the hub address to one camera, or scan the home network and set up the cameras it finds. Picture size is Custom, 480p, or 720p. Custom is the default. A saved 480p or 720p stays selected.
 - Treats can be turned on for one camera. They stay off until then.
 - Scent can be turned on for one camera. It stays off until then. One press runs the fan for about 10 seconds.
 - An admin can schedule when each camera can be used, including weekly and one-day windows, and a block inside an open window.

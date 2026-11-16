@@ -11,11 +11,13 @@ import re
 import secrets
 import signal
 import smtplib
+import socket
 import sqlite3
 import ssl
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from email.message import EmailMessage
 import urllib.parse
@@ -3040,6 +3042,361 @@ def deploy_device(ip, hub_ip):
     return detail or "camera updated"
 
 
+DEVICE_PROBE = r"""
+import os, re, sys
+if not os.path.isfile("/usr/bin/petchatz-ws"):
+    sys.exit(4)
+server = ""
+path = "/var/www/http/scripts/deviceSettingsMenu.js"
+if os.path.isfile(path):
+    text = open(path).read()
+    match = re.search('var\\s+petchatz_server\\s*=\\s*"([^"]*)"', text)
+    if match:
+        server = match.group(1)
+mac = ""
+for name in ("wlan0", "mlan0", "eth0"):
+    addr = "/sys/class/net/%s/address" % name
+    if os.path.isfile(addr):
+        mac = open(addr).read().strip().lower()
+        if mac and mac != "00:00:00:00:00:00":
+            break
+if not mac and os.path.isdir("/sys/class/net"):
+    for name in sorted(os.listdir("/sys/class/net")):
+        if name == "lo":
+            continue
+        addr = "/sys/class/net/%s/address" % name
+        if not os.path.isfile(addr):
+            continue
+        mac = open(addr).read().strip().lower()
+        if mac and mac != "00:00:00:00:00:00":
+            break
+print("server=" + server)
+print("id=" + mac.replace(":", ""))
+"""
+
+net_job_lock = threading.Lock()
+net_job = {
+    "kind": "",
+    "running": False,
+    "phase": "",
+    "done": 0,
+    "total": 0,
+    "devices": [],
+    "results": [],
+    "error": "",
+    "finished": True,
+}
+
+
+def net_job_view():
+    with net_job_lock:
+        return {
+            "kind": net_job["kind"],
+            "running": net_job["running"],
+            "phase": net_job["phase"],
+            "done": net_job["done"],
+            "total": net_job["total"],
+            "devices": list(net_job["devices"]),
+            "results": list(net_job["results"]),
+            "error": net_job["error"],
+            "finished": net_job["finished"],
+        }
+
+
+def net_job_update(**kwargs):
+    with net_job_lock:
+        net_job.update(kwargs)
+
+
+def net_job_begin(kind):
+    with net_job_lock:
+        if net_job["running"]:
+            return False
+        net_job.update({
+            "kind": kind,
+            "running": True,
+            "phase": "Starting",
+            "done": 0,
+            "total": 0,
+            "devices": [],
+            "results": [],
+            "error": "",
+            "finished": False,
+        })
+        return True
+
+
+def interface_prefix(ip):
+    completed = subprocess.run(
+        ["ip", "-4", "addr"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    wanted = ip + "/"
+    for line in completed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "inet" and parts[1].startswith(wanted):
+            return int(parts[1].split("/", 1)[1])
+    raise ValueError("the hub address is not on a local network interface")
+
+
+def lan_hosts(ip):
+    prefix = interface_prefix(ip)
+    if prefix < 24:
+        prefix = 24
+    network = ipaddress.ip_network("%s/%s" % (ip, prefix), strict=False)
+    return [str(host) for host in network.hosts() if str(host) != ip]
+
+
+def port_open(ip):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    try:
+        sock.connect((ip, 22))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def ssh_python(ip, script, timeout):
+    if not shutil_which("sshpass"):
+        raise ValueError("the hub does not have sshpass installed")
+    known = os.path.join(BASE, "known_hosts")
+    env = os.environ.copy()
+    env["SSHPASS"] = ""
+    return subprocess.run(
+        [
+            "sshpass", "-e", "ssh",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "ConnectTimeout=50",
+            "-o", "UserKnownHostsFile=%s" % known,
+            "root@%s" % ip,
+            "python3", "-",
+        ],
+        input=script.replace("\r\n", "\n"),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+        check=False,
+    )
+
+
+def probe_camera(ip, hub_ip):
+    try:
+        completed = ssh_python(ip, DEVICE_PROBE, 70)
+    except subprocess.TimeoutExpired:
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    server = ""
+    device_id = ""
+    saw = False
+    for line in lines:
+        if line.startswith("server="):
+            server = line[len("server="):]
+            saw = True
+        elif line.startswith("id="):
+            device_id = line[len("id="):].lower()
+            saw = True
+    if not saw:
+        return None
+    if not re.fullmatch(r"[0-9a-f]{12}", device_id):
+        device_id = ""
+    nickname = ""
+    known = False
+    if device_id:
+        with db_lock:
+            row = db.execute(
+                "SELECT nickname FROM devices WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        if row is not None:
+            known = True
+            nickname = row["nickname"] or ""
+    return {
+        "ip": ip,
+        "device_id": device_id,
+        "nickname": nickname,
+        "known": known,
+        "configured": server == hub_ip,
+    }
+
+
+def run_network_scan(hub_ip, username, role, remote):
+    found = []
+    try:
+        hosts = lan_hosts(hub_ip)
+        if not hosts:
+            raise ValueError("the hub network has no other addresses to check")
+        net_job_update(total=len(hosts), done=0, phase="Looking for cameras")
+        open_hosts = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=40) as pool:
+            futures = {pool.submit(port_open, ip): ip for ip in hosts}
+            for future in as_completed(futures):
+                done += 1
+                try:
+                    if future.result():
+                        open_hosts.append(futures[future])
+                except Exception:
+                    log.exception("camera scan port check failed")
+                if done % 10 == 0 or done == len(hosts):
+                    net_job_update(done=done, phase="Looking for cameras")
+        open_hosts.sort(key=lambda item: ipaddress.ip_address(item))
+        if not open_hosts:
+            net_job_update(done=len(hosts), total=len(hosts), phase="No cameras answered", devices=[])
+        else:
+            ssh_done = 0
+            net_job_update(done=0, total=len(open_hosts), phase="Checking cameras that answered")
+            for ip in open_hosts:
+                net_job_update(done=ssh_done, phase="Checking " + ip)
+                try:
+                    camera = probe_camera(ip, hub_ip)
+                except Exception:
+                    log.exception("camera probe failed")
+                    camera = None
+                if camera is not None:
+                    found.append(camera)
+                    net_job_update(devices=list(found))
+                ssh_done += 1
+                net_job_update(done=ssh_done)
+            found.sort(key=lambda item: ipaddress.ip_address(item["ip"]))
+            net_job_update(devices=found, done=len(open_hosts), phase="Scan finished")
+        record_audit(
+            username,
+            role,
+            "Scanned the home network",
+            detail="found %s cameras" % len(found),
+            remote=remote,
+        )
+    except Exception as exc:
+        log.exception("camera scan failed")
+        message = str(exc) if isinstance(exc, ValueError) else "the scan did not finish"
+        net_job_update(error=message, phase="Scan stopped")
+        record_audit(username, role, "Camera scan failed", detail=message, remote=remote)
+    finally:
+        net_job_update(finished=True, running=False)
+
+
+def run_network_setup(ips, hub_ip, username, role, remote):
+    results = []
+    try:
+        net_job_update(total=len(ips), done=0, phase="Setting up cameras")
+        for index, ip in enumerate(ips, 1):
+            net_job_update(done=index - 1, phase="Setting up " + ip)
+            try:
+                detail = deploy_device(ip, hub_ip)
+                record_audit(
+                    username,
+                    role,
+                    "Deployed camera setup",
+                    subject=ip,
+                    detail=detail,
+                    remote=remote,
+                )
+                results.append({"ip": ip, "ok": True, "detail": detail})
+            except subprocess.TimeoutExpired:
+                message = "the camera did not finish within two minutes"
+                record_audit(
+                    username,
+                    role,
+                    "Camera setup failed",
+                    subject=ip,
+                    detail=message,
+                    remote=remote,
+                )
+                results.append({"ip": ip, "ok": False, "detail": message})
+            except ValueError as exc:
+                record_audit(
+                    username,
+                    role,
+                    "Camera setup failed",
+                    subject=ip,
+                    detail=str(exc),
+                    remote=remote,
+                )
+                results.append({"ip": ip, "ok": False, "detail": str(exc)})
+            net_job_update(done=index, results=list(results))
+        net_job_update(phase="Setup finished")
+    except Exception:
+        log.exception("camera setup batch failed")
+        net_job_update(error="setup did not finish", phase="Setup stopped")
+        record_audit(username, role, "Camera setup failed", detail="setup did not finish", remote=remote)
+    finally:
+        net_job_update(finished=True, running=False, results=results)
+
+
+def hub_lan_ip():
+    hub_ip = (load_config().get("lan_ip") or "").strip()
+    return private_ipv4(hub_ip)
+
+
+async def api_device_network(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    return web.json_response(net_job_view())
+
+
+async def api_device_scan(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    try:
+        hub_ip = hub_lan_ip()
+    except ValueError:
+        raise web.HTTPBadRequest(text="the hub does not have a home-network address saved")
+    if not net_job_begin("scan"):
+        raise web.HTTPConflict(text="a scan or setup is already running")
+    remote = client_addr.get()
+    threading.Thread(
+        target=run_network_scan,
+        args=(hub_ip, user["username"], user["role"], remote),
+        daemon=True,
+    ).start()
+    return web.json_response(net_job_view())
+
+
+async def api_device_setup(request):
+    user = request_user(request)
+    if user is None or user["role"] != "admin":
+        raise web.HTTPForbidden()
+    body = await request.json()
+    raw = body.get("ips")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise web.HTTPBadRequest(text="choose at least one camera")
+    if len(raw) > 16:
+        raise web.HTTPBadRequest(text="set up at most 16 cameras at a time")
+    try:
+        ips = []
+        for item in raw:
+            ip = private_ipv4(item)
+            if ip not in ips:
+                ips.append(ip)
+        hub_ip = hub_lan_ip()
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    if not net_job_begin("setup"):
+        raise web.HTTPConflict(text="a scan or setup is already running")
+    remote = client_addr.get()
+    threading.Thread(
+        target=run_network_setup,
+        args=(ips, hub_ip, user["username"], user["role"], remote),
+        daemon=True,
+    ).start()
+    return web.json_response(net_job_view())
+
+
 def shutil_which(name):
     for folder in os.environ.get("PATH", "").split(os.pathsep):
         candidate = os.path.join(folder, name)
@@ -3052,6 +3409,8 @@ async def api_device_deploy(request):
     user = request_user(request)
     if user is None or user["role"] != "admin":
         raise web.HTTPForbidden()
+    if net_job_view()["running"]:
+        raise web.HTTPConflict(text="a scan or setup is already running")
     body = await request.json()
     try:
         ip = private_ipv4(body.get("ip"))
@@ -3750,6 +4109,9 @@ def make_app():
             web.post("/api/device", api_device_save),
             web.post("/api/device/remove", api_device_remove),
             web.post("/api/device/deploy", api_device_deploy),
+            web.get("/api/device/network", api_device_network),
+            web.post("/api/device/scan", api_device_scan),
+            web.post("/api/device/setup", api_device_setup),
             web.post("/api/treat", api_treat),
             web.post("/api/scent", api_scent),
             web.get("/screen/{which}.jpg", screen_image),

@@ -31,7 +31,7 @@ The design of the call path is in [docs/architecture.md](docs/architecture.md). 
 | `hub/login.html` | Sign-in page |
 | `hub/calls.html` | Call page for a person |
 | `hub/users.html` | Accounts, guest sign-in, access, expiration, and deleting an account |
-| `hub/devices.html` | Camera settings, last address, removal, treats, scent, idle pictures, and one-step setup |
+| `hub/devices.html` | Camera settings, picture size, last address, removal, treats, scent, idle pictures, and home-network setup |
 | `hub/settings.html` | Page name, logo, guest instructions, public name, Cloudflare Tunnel, call relays, mail, and scheduled tasks |
 | `hub/schedule.html` | Operating hours and daily treat and scent limits |
 | `hub/audit.html` | Admin activity log, with username and camera filters |

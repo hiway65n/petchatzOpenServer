@@ -20,13 +20,6 @@
       <span class="who" id="who"></span>
       <form method="post" action="/logout"><button class="ghost" type="submit">Sign out</button></form>
     </nav>
-    <h2>Set up a camera</h2>
-    <form id="deploy-device" class="card">
-      <label for="deploy-ip">Camera address</label>
-      <input id="deploy-ip" name="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off" required>
-      <button type="submit">Deploy to this camera</button>
-      <p class="sub">One press installs the watchdog change, points the camera at this hub, and reloads its screen. The camera must be on the home network and still use the empty root password it shipped with. A camera that is already set up is left running.</p>
-    </form>
     <h2>Camera screen</h2>
     <form id="screen-ready" class="card">
       <label for="ready-file">Ready picture</label>
@@ -46,9 +39,22 @@
       <p class="sub">JPEG. 320 by 240 pixels matches the camera panel. The camera's browser window is wider than that panel, so the picture is drawn at 320 by 240. A larger picture is scaled and cropped to fill it. Keep the file under 1 MB. The same two pictures are used on every camera. With no picture saved, the screen shows Ready or Out of service.</p>
     </form>
     <h2>Cameras</h2>
-    <p class="sub">The name is what people see. The line under each camera is its id and the last address it used to reach this hub. Picture size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards. Removing a camera clears its name, settings, and who can call it. A camera that is still powered on comes back with those defaults. <a href="/help#devices">Guide</a></p>
+    <p class="sub">The name is what people see. The line under each camera is its id and the last address it used to reach this hub. Picture size is Custom, 480p, or 720p. Custom is the default and keeps the width and height boxes. 480p is 640 by 480. 720p is 1280 by 720. A saved 480p or 720p stays selected. Any other size stays on Custom. The size and frame rate are used the next time that camera starts a call. 320 by 240 at 12 is the safe starting point on these boards. Removing a camera clears its name, settings, and who can call it. A camera that is still powered on comes back with those defaults. <a href="/help#devices">Guide</a></p>
     <div id="cameras"></div>
     <p id="admin-msg"></p>
+    <h2>Set up a camera</h2>
+    <form id="deploy-device" class="card">
+      <p class="sub">Scan looks at the hub's home network, up to 254 addresses. It lists a PetChatz that still accepts the empty root password it shipped with, and marks one that already points at this hub. Set up installs the watchdog change, points the camera at this hub, and reloads its screen. A camera that is already set up is left running.</p>
+      <button id="scan-network" type="button">Scan the home network</button>
+      <div id="setup-progress" class="progress hidden"><span id="setup-bar"></span></div>
+      <p id="setup-phase" class="sub hidden"></p>
+      <div id="found" class="found"></div>
+      <button id="setup-selected" class="hidden" type="button">Set up selected</button>
+      <label for="deploy-ip">Camera address</label>
+      <input id="deploy-ip" name="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off">
+      <button type="submit">Deploy to this camera</button>
+      <p id="setup-msg"></p>
+    </form>
   </main>
   <script src="/common.js"></script>
   <script>
@@ -89,8 +95,23 @@
         var fields = document.createElement("div");
         fields.className = "cam-fields";
         fields.appendChild(field("Name", "nickname", device.nickname || ""));
-        fields.appendChild(field("Width", "width", device.width || 320));
-        fields.appendChild(field("Height", "height", device.height || 240));
+        var presetWrap = document.createElement("div");
+        var presetLabel = document.createElement("label");
+        presetLabel.textContent = "Picture size";
+        var preset = document.createElement("select");
+        preset.name = "preset";
+        [["custom", "Custom"], ["480", "480p"], ["720", "720p"]].forEach(function(item) {
+          var option = document.createElement("option");
+          option.value = item[0];
+          option.textContent = item[1];
+          preset.appendChild(option);
+        });
+        preset.value = "custom";
+        if (Number(device.width) === 640 && Number(device.height) === 480) preset.value = "480";
+        if (Number(device.width) === 1280 && Number(device.height) === 720) preset.value = "720";
+        presetWrap.appendChild(presetLabel);
+        presetWrap.appendChild(preset);
+        fields.appendChild(presetWrap);
         fields.appendChild(field("Frames per second", "frame_rate", device.frame_rate || 12));
         var button = document.createElement("button");
         button.className = "ghost";
@@ -98,6 +119,27 @@
         button.textContent = "Save";
         fields.appendChild(button);
         form.appendChild(fields);
+        var size = document.createElement("div");
+        size.className = "cam-fields";
+        var widthField = field("Width", "width", device.width || 320);
+        var heightField = field("Height", "height", device.height || 240);
+        size.appendChild(widthField);
+        size.appendChild(heightField);
+        form.appendChild(size);
+        function applyPreset() {
+          var custom = preset.value === "custom";
+          size.className = custom ? "cam-fields" : "cam-fields hidden";
+          if (preset.value === "480") {
+            form.width.value = "640";
+            form.height.value = "480";
+          }
+          if (preset.value === "720") {
+            form.width.value = "1280";
+            form.height.value = "720";
+          }
+        }
+        preset.onchange = applyPreset;
+        applyPreset();
         var checks = document.createElement("div");
         checks.className = "row";
         checks.appendChild(checkField("Echo cancellation", "echo_cancel", device.echo_cancel !== false));
@@ -204,28 +246,182 @@
     document.getElementById("deploy-device").onsubmit = function(event) {
       event.preventDefault();
       var form = event.target;
-      var button = form.querySelector("button");
+      var ip = form.ip.value.trim();
+      if (!ip) {
+        document.getElementById("setup-msg").textContent = "Enter a camera address.";
+        return;
+      }
+      var button = form.querySelector("button[type='submit']");
       button.disabled = true;
-      document.getElementById("admin-msg").textContent = "Deploying. This can take a minute.";
+      document.getElementById("setup-msg").textContent = "Deploying. This can take a minute.";
       fetch("/api/device/deploy", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ip: form.ip.value})
+        body: JSON.stringify({ip: ip})
       }).then(function(r) {
         button.disabled = false;
         if (!r.ok) {
-          say("admin-msg", r, "");
+          say("setup-msg", r, "");
           return;
         }
         r.json().then(function(body) {
-          document.getElementById("admin-msg").textContent = body.detail || "Camera updated.";
-          form.reset();
+          document.getElementById("setup-msg").textContent = body.detail || "Camera updated.";
+          form.ip.value = "";
           loadCameras(true);
         });
       }).catch(function() {
         button.disabled = false;
-        document.getElementById("admin-msg").textContent = "Deploy did not finish.";
+        document.getElementById("setup-msg").textContent = "Deploy did not finish.";
       });
+    };
+
+    var foundCameras = [];
+
+    function showProgress(body) {
+      var barWrap = document.getElementById("setup-progress");
+      var phase = document.getElementById("setup-phase");
+      var total = body.total || 0;
+      var done = body.done || 0;
+      var pct = total ? Math.round(done * 100 / total) : 0;
+      barWrap.className = "progress";
+      document.getElementById("setup-bar").style.width = pct + "%";
+      phase.className = "sub";
+      phase.textContent = (body.phase || "Working") + (total ? " (" + done + " of " + total + ")" : "");
+    }
+
+    function hideProgress() {
+      document.getElementById("setup-progress").className = "progress hidden";
+      document.getElementById("setup-phase").className = "sub hidden";
+    }
+
+    function renderFound(list, running) {
+      var box = document.getElementById("found");
+      var setup = document.getElementById("setup-selected");
+      box.innerHTML = "";
+      var choices = 0;
+      (list || []).forEach(function(camera) {
+        var row = document.createElement("div");
+        row.className = "found-row";
+        var label = camera.ip;
+        if (camera.device_id) label += " · " + camera.device_id;
+        if (camera.nickname) label += " · " + camera.nickname;
+        label += camera.configured ? " · Already set up" : " · Not set up";
+        if (!camera.configured) {
+          choices += 1;
+          var boxInput = document.createElement("input");
+          boxInput.type = "checkbox";
+          boxInput.checked = true;
+          boxInput.disabled = !!running;
+          boxInput.value = camera.ip;
+          row.appendChild(boxInput);
+          var one = document.createElement("button");
+          one.type = "button";
+          one.className = "ghost";
+          one.textContent = "Set up";
+          one.disabled = !!running;
+          one.onclick = function() { startSetup([camera.ip]); };
+          row.appendChild(one);
+        }
+        var text = document.createElement("span");
+        text.textContent = label;
+        row.appendChild(text);
+        box.appendChild(row);
+      });
+      setup.className = choices && !running ? "" : "hidden";
+    }
+
+    function pollNetwork() {
+      fetch("/api/device/network").then(function(r) { return r.json(); }).then(function(body) {
+        if (!body.finished) showProgress(body);
+        if (body.kind === "scan") {
+          foundCameras = body.devices || [];
+          renderFound(foundCameras, !body.finished);
+        }
+        if (body.kind === "setup") {
+          var lines = (body.results || []).map(function(item) {
+            return item.ip + " · " + item.detail;
+          });
+          if (lines.length) document.getElementById("setup-msg").textContent = lines.join(" ");
+          if (!body.finished) renderFound(foundCameras, true);
+        }
+        if (!body.finished) {
+          setTimeout(pollNetwork, 700);
+          return;
+        }
+        hideProgress();
+        if (body.error) {
+          document.getElementById("setup-msg").textContent = body.error;
+          return;
+        }
+        if (body.kind === "scan") {
+          document.getElementById("setup-msg").textContent = foundCameras.length ? "Found " + foundCameras.length + "." : "No cameras found.";
+          renderFound(foundCameras, false);
+        }
+        if (body.kind === "setup") {
+          var doneIps = {};
+          (body.results || []).forEach(function(item) {
+            if (item.ok) doneIps[item.ip] = true;
+          });
+          foundCameras.forEach(function(camera) {
+            if (doneIps[camera.ip]) camera.configured = true;
+          });
+          renderFound(foundCameras, false);
+          loadCameras(true);
+        }
+      }).catch(function() {
+        document.getElementById("setup-msg").textContent = "The scan status could not be read.";
+        hideProgress();
+      });
+    }
+
+    function startScan() {
+      document.getElementById("setup-msg").textContent = "";
+      document.getElementById("found").innerHTML = "";
+      document.getElementById("scan-network").disabled = true;
+      fetch("/api/device/scan", {method: "POST"}).then(function(r) {
+        document.getElementById("scan-network").disabled = false;
+        if (!r.ok) {
+          say("setup-msg", r, "");
+          return;
+        }
+        pollNetwork();
+      }).catch(function() {
+        document.getElementById("scan-network").disabled = false;
+        document.getElementById("setup-msg").textContent = "The scan did not start.";
+      });
+    }
+
+    function startSetup(ips) {
+      document.getElementById("setup-msg").textContent = "";
+      document.getElementById("setup-selected").disabled = true;
+      fetch("/api/device/setup", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ips: ips})
+      }).then(function(r) {
+        document.getElementById("setup-selected").disabled = false;
+        if (!r.ok) {
+          say("setup-msg", r, "");
+          return;
+        }
+        pollNetwork();
+      }).catch(function() {
+        document.getElementById("setup-selected").disabled = false;
+        document.getElementById("setup-msg").textContent = "Setup did not start.";
+      });
+    }
+
+    document.getElementById("scan-network").onclick = startScan;
+    document.getElementById("setup-selected").onclick = function() {
+      var ips = [];
+      document.querySelectorAll("#found input[type='checkbox']:checked").forEach(function(input) {
+        ips.push(input.value);
+      });
+      if (!ips.length) {
+        document.getElementById("setup-msg").textContent = "Choose a camera that is not set up.";
+        return;
+      }
+      startSetup(ips);
     };
 
     function showScreen(body) {

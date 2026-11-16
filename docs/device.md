@@ -1,6 +1,6 @@
 # Set up the device
 
-Do these steps in order, or use **Deploy to this camera** on the hub's Devices page. That button does steps 2 through 4 when the camera still accepts SSH as root with an empty password. Install the watchdog drop-in before changing the server name. If the call page loads while the stock unit is still in place, the board reboots about every four minutes.
+Do these steps in order, or use **Set up a camera** at the bottom of the hub's Devices page. Deploy to one address, or scan the home network and set up the cameras it lists. That setup does steps 2 through 4 when the camera still accepts SSH as root with an empty password. Install the watchdog drop-in before changing the server name. If the call page loads while the stock unit is still in place, the board reboots about every four minutes.
 
 The device already has the camera, microphone, and a Chromium 69 kiosk. This setup does not replace that software. It tells the kiosk to load the call page from your hub, and it stops the local service from rebooting the board when that page is on screen.
 

@@ -4,7 +4,7 @@ The device has one usable Cortex-A9. It encodes its camera and decodes the compu
 
 ## What the pages do now
 
-The device asks its camera for an ideal size and frame rate saved per camera. A new camera starts at 320×240 and 12 frames per second. Echo cancellation and noise suppression start on, and an admin can turn each one off on its own from the Cameras section. The hub sends those values with the device's hello, and again when they are saved. The device uses them the next time it opens the microphone and camera. A call already in progress keeps the old stream.
+The device asks its camera for an ideal size and frame rate saved per camera. A new camera starts at 320×240 and 12 frames per second. An admin can leave the size on Custom or choose 480p (640×480) or 720p (1280×720). A saved 480p or 720p stays selected. Echo cancellation and noise suppression start on, and an admin can turn each one off on its own from the Cameras section. The hub sends those values with the device's hello, and again when they are saved. The device uses them the next time it opens the microphone and camera. A call already in progress keeps the old stream.
 
 The computer still requests a modest camera and caps its outgoing video sender at about 200 kbit/s and 12 fps after the answer is built. That cap is on the computer's outbound sender only. The computer's microphone processing is not part of the per-camera settings.
 

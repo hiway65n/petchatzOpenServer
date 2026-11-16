@@ -65,6 +65,7 @@ The device is the caller in WebRTC terms: it creates the offer when it receives 
 | `POST /api/password` | Admin. Set a user account's password, or change your own after the current one. A user cannot change a password |
 | `POST /api/device`, `POST /api/device/remove` | Admin. Save or remove one camera |
 | `POST /api/device/deploy` | Admin. Given a home-network address, install the watchdog drop-in, point the camera at the hub, and reload its screen. Uses the empty root password the camera shipped with |
+| `GET /api/device/network`, `POST /api/device/scan`, `POST /api/device/setup` | Admin. Scan the hub's home network for cameras, then set up one or several. The scan stays on that private network |
 | `POST /api/treat` | Signed-in user who can call that camera, and only when treats are turned on for it. Refused outside an operating window or after that camera's 24-hour limit |
 | `POST /api/scent` | Signed-in user who can call that camera, and only when scent is turned on for it. Refused outside an operating window or after that camera's 24-hour limit |
 | `GET /api/hours`, `POST /api/hours`, `POST /api/hours/remove`, `POST /api/hours/limits`, `POST /api/hours/timezone` | Admin. Operating windows, daily treat and scent limits, and the house time zone |
